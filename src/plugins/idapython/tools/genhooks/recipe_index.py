@@ -87,5 +87,5 @@ hooks = {
             ["hxe_", "lxe_"],
             recipe_hexrays
         )
-    ],
+    ]
 }

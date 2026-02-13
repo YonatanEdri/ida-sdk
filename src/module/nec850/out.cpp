@@ -8,43 +8,6 @@
  */
 #include "necv850.hpp"
 
-//--------------------------------------------------------------------------
-// LIST12 table mapping to corresponding registers
-static const int list12_table[] =
-{
-  rR31, // 0
-  rR29, // 1
-  rR28, // 2
-  rR23, // 3
-  rR22, // 4
-  rR21, // 5
-  rR20, // 6
-  rR27, // 7
-  rR26, // 8
-  rR25, // 9
-  rR24, // 10
-  rEP   // 11
-};
-
-// Using the indexes in this table as indexes in list12_table[]
-// we can test for bits in List12 in order
-static const int list12order_table[] =
-{
-  6,    // 0  r20
-  5,    // 1  r21
-  4,    // 2  r22
-  3,    // 3  r23
-  10,   // 4  r24
-  9,    // 5  r25
-  8,    // 6  r26
-  7,    // 7  r27
-  2,    // 8  r28
-  1,    // 9  r29
-  11,   // 10 r30
-  0,    // 11 r31
-};
-
-
 static const char *const reg_and_sel_ids_to_symbolic_names[32][8] =
 {
 /* selId     0         1           2           3        4         5         6        7                    */
@@ -52,7 +15,7 @@ static const char *const reg_and_sel_ids_to_symbolic_names[32][8] =
 /* sr1  */ { "eipsw",  "mcfg1",    nullptr,    nullptr, nullptr,  "mprc",   "mpua0", "mpua8",  }, /* sr1  */
 /* sr2  */ { "fepc",   "rbase",    nullptr,    nullptr, nullptr,  nullptr,  "mpat0", "mpat8",  }, /* sr2  */
 /* sr3  */ { "fepsw",  "ebase",    nullptr,    nullptr, nullptr,  nullptr,  nullptr, nullptr,  }, /* sr3  */
-/* sr4  */ { nullptr,  "intbp",    nullptr,    nullptr, "telo0",  "mpbrgn", "mpla1", "mpla9",  }, /* sr4  */
+/* sr4  */ { "ecr",    "intbp",    nullptr,    nullptr, "telo0",  "mpbrgn", "mpla1", "mpla9",  }, /* sr4  */
 /* sr5  */ { "psw",    "mctl",     "htctl",    nullptr, "telo1",  "mptrgn", "mpua1", "mpua9",  }, /* sr5  */
 /* sr6  */ { "fpsr",   "pid",      "mea",      nullptr, "tehi0",  nullptr,  "mpat1", "mpat9",  }, /* sr6  */
 /* sr7  */ { "fpepc",  "fpipr",    "asid",     nullptr, "tehi1",  nullptr,  nullptr, nullptr,  }, /* sr7  */
@@ -63,13 +26,13 @@ static const char *const reg_and_sel_ids_to_symbolic_names[32][8] =
 /* sr12 */ { "sesr",   "scbp",     "icsr",     nullptr, "bwerrl", nullptr,  "mpla3", "mpla11", }, /* sr12 */
 /* sr13 */ { "eiic",   "hvccfg",   "intcfg",   nullptr, "bwerrh", nullptr,  "mpua3", "mpua11", }, /* sr13 */
 /* sr14 */ { "feic",   "hvcbp",    nullptr,    nullptr, "brerrl", nullptr,  "mpat3", "mpat11", }, /* sr14 */
-/* sr15 */ { nullptr,  "vcsel",    nullptr,    nullptr, "brerrh", nullptr,  nullptr, nullptr,  }, /* sr15 */
+/* sr15 */ { "dbic",  "vcsel",    nullptr,    nullptr, "brerrh", nullptr,  nullptr, nullptr,  }, /* sr15 */
 /* sr16 */ { "ctpc",   "vmprt0",   "tlbsch",   nullptr, "ictagl", nullptr,  "mpla4", "mpla12", }, /* sr16 */
 /* sr17 */ { "ctpsw",  "vmprt1",   nullptr,    nullptr, "ictagh", nullptr,  "mpua4", "mpua12", }, /* sr17 */
-/* sr18 */ { nullptr,  "vmprt1",   nullptr,    nullptr, "icdatl", nullptr,  "mpat4", "mpat12", }, /* sr18 */
-/* sr19 */ { nullptr,  nullptr,    nullptr,    nullptr, "icdath", nullptr,  nullptr, nullptr,  }, /* sr19 */
+/* sr18 */ { "dbpc",   "vmprt1",   nullptr,    nullptr, "icdatl", nullptr,  "mpat4", "mpat12", }, /* sr18 */
+/* sr19 */ { "dbpsw",  nullptr,    nullptr,    nullptr, "icdath", nullptr,  nullptr, nullptr,  }, /* sr19 */
 /* sr20 */ { "ctbp",   nullptr,    nullptr,    nullptr, "dctagl", "mpprt0", "mpla5", "mpla13", }, /* sr20 */
-/* sr21 */ { nullptr,  nullptr,    nullptr,    nullptr, "dctagh", "mpprt1", "mpua5", "mpua13", }, /* sr21 */
+/* sr21 */ { "dir",    nullptr,    nullptr,    nullptr, "dctagh", "mpprt1", "mpua5", "mpua13", }, /* sr21 */
 /* sr22 */ { nullptr,  nullptr,    nullptr,    nullptr, "dcdatl", "mpprt2", "mpat5", "mpat13", }, /* sr22 */
 /* sr23 */ { nullptr,  "vmscctl",  "htscctl",  nullptr, "dcdath", nullptr,  nullptr, nullptr,  }, /* sr23 */
 /* sr24 */ { nullptr,  "vmsctbl0", "htsctbl0", nullptr, "icctrl", nullptr,  "mpla6", "mpla14"  }, /* sr24 */
@@ -78,7 +41,7 @@ static const char *const reg_and_sel_ids_to_symbolic_names[32][8] =
 /* sr27 */ { nullptr,  "vmsctbl3", "htsctbl3", nullptr, "dccfg",  nullptr,  nullptr, nullptr,  }, /* sr27 */
 /* sr28 */ { "eiwr",   nullptr,    "htsctbl4", nullptr, "icerr",  nullptr,  "mlua7", "mpla15", }, /* sr28 */
 /* sr29 */ { "fewr",   nullptr,    "htsctbl5", nullptr, "dcerr",  nullptr,  "mpua7", "mpua15", }, /* sr29 */
-/* sr30 */ { nullptr,  nullptr,    "htsctbl6", nullptr, nullptr,  nullptr,  "mpat7", "mpat15", }, /* sr30 */
+/* sr30 */ { "dbwr",   nullptr,    "htsctbl6", nullptr, nullptr,  nullptr,  "mpat7", "mpat15", }, /* sr30 */
 /* sr31 */ { "bsel",   nullptr,    "htsctbl7", nullptr, nullptr,  nullptr,  nullptr, nullptr,  }, /* sr31 */
 /* selId     0         1           2           3        4         5         6        7                    */
 };
@@ -113,7 +76,7 @@ class out_nec850_t : public outctx_t
   void get_reg_name(char *output_name, size_t output_size, uint16 reg) const;
 public:
   void OutReg(const op_t &r);
-  void out_reg_list(uint32 L);
+  void out_reg_list(const reglist_t &regs);
   void out_reg_range(const op_t &op);
   bool out_operand(const op_t &x);
   void out_insn(void);
@@ -124,60 +87,20 @@ CASSERT(sizeof(out_nec850_t) == sizeof(outctx_t));
 
 DECLARE_OUT_FUNCS_WITHOUT_OUTMNEM(out_nec850_t)
 
-//--------------------------------------------------------------------------
-bool reg_in_list12(uint16 reg, uint32 L)
+//-------------------------------------------------------------------------
+static void out_reg(outctx_t *out, int reg)
 {
-  if ( rR20 <= reg && reg <= rR31 )
-  {
-    uint32 idx = list12order_table[reg - rR20];   //lint !e676 possibly indexing before the beginning of an allocation
-    return (L & (1 << idx)) != 0;
-  }
-  return false;
+  const char *rn = reg < out->ph.regs_num
+                 ? out->ph.reg_names[reg]
+                 : "<bad register>";
+  out->out_register(rn);
+}
+void out_nec850_t::out_reg_list(const reglist_t &regs)
+{
+  regs.print(this, out_reg, ", ");
 }
 
-//--------------------------------------------------------------------------
-void out_nec850_t::out_reg_list(uint32 L)
-{
-  int last = qnumber(list12_table);
-  int in_order = 0, c = 0;
-  const char *last_rn = nullptr;
-
-  out_symbol('{');
-  for ( int i=0; i < qnumber(list12order_table); i++ )
-  {
-    uint32 idx = list12order_table[i];
-    if ( (L & (1 << idx)) == 0 )
-      continue;
-    c++;
-    const char *rn = RegNames[list12_table[idx]];
-    if ( last + 1 == i )
-      in_order++;
-    else
-    {
-      if ( in_order > 1 )
-      {
-        out_symbol('-');
-        out_register(last_rn);
-        out_line(", ", COLOR_SYMBOL);
-      }
-      else if ( c > 1 )
-      {
-        out_line(", ", COLOR_SYMBOL);
-      }
-      out_register(rn);
-      in_order = 1;
-    }
-    last_rn = rn;
-    last    = i;
-  }
-  if ( in_order > 1 )
-  {
-    out_symbol('-');
-    out_register(last_rn);
-  }
-  out_symbol('}');
-}
-
+//-------------------------------------------------------------------------
 void out_nec850_t::get_reg_name(char *output_name, size_t output_size, uint16 reg) const
 {
   if ( insn.itype == NEC850_LDM_MP || insn.itype == NEC850_STM_MP )
@@ -268,7 +191,9 @@ void out_nec850_t::OutReg(const op_t &r)
   if ( regname == nullptr )
     regname = ph.reg_names[r.reg];
 
-  bool brackets = r.specflag1 & N850F_USEBRACKETS;
+  bool brackets = r.type == o_displ
+               || r.type == o_phrase
+               || r.type == o_reg && (r.specflag1 & N850F_USEBRACKETS) != 0;
   if ( brackets )
     out_symbol('[');
   out_register(regname);
@@ -385,12 +310,15 @@ bool out_nec850_t::out_operand(const op_t &x)
     case o_void:
       return false;
     case o_reglist:
-      out_reg_list(x.value);
+      out_symbol('{');
+      out_reg_list(reglist_t(x));
+      out_symbol('}');
       break;
     case o_regrange:
       out_reg_range(x);
       break;
     case o_reg:
+    case o_phrase:
       OutReg(x);
       break;
     case o_imm:

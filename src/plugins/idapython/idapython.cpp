@@ -17,10 +17,7 @@
 #undef _DEBUG
 #define _WASDEBUG
 #endif
-#include <Python.h>
-#ifdef __MAC__
-extern "C" __attribute__((weak)) int Py_IsInitialized(void);
-#endif
+#include "py-include/Python_dynload.h"
 #ifdef _WASDEBUG
 #define _DEBUG
 #endif
@@ -44,6 +41,7 @@ extern "C" __attribute__((weak)) int Py_IsInitialized(void);
 #include <ida_highlighter.hpp>
 #include <signal.h>
 
+#define MAINMOD //lint !e750 local macro '' not referenced
 #include "pywraps.hpp"
 
 #include "extapi.cpp"
@@ -79,6 +77,11 @@ static const char S_IDAPYTHON_DATA_NODE[] =       "IDAPython_Data";
 idapython_plugin_t *ida_export get_plugin_instance()
 {
   return idapython_plugin_t::get_instance();
+}
+
+ext_api_t *ida_export get_extapi()
+{
+  return &idapython_plugin_t::get_instance()->extapi;
 }
 
 //-------------------------------------------------------------------------
@@ -227,7 +230,7 @@ void execution_t::push()
       // the script will stop working
       newref_t sysmod(PyImport_ImportModule("sys"));
       if ( sysmod )
-        prev_trace_obj.reset(new newref_t(PyObject_CallMethod(sysmod.o, "gettrace", nullptr)));
+        prev_trace_obj.reset(new newref_t(idapython_plugin_t::get_instance()->extapi.PyObject_CallMethod_ptr(sysmod.o, "gettrace", nullptr)));
     }
 
     get_plugin_instance()->extapi.PyEval_SetTrace_ptr((Py_tracefunc) execution_t::on_trace, nullptr); //lint !e611 cast between pointer to function type '' and pointer to object type 'void *'
@@ -255,7 +258,7 @@ void execution_t::stop_tracking()
     {
       newref_t sysmod(PyImport_ImportModule("sys"));
       if ( sysmod )
-        PyObject_CallMethod(sysmod.o, "settrace", "O", prev_trace_obj->o);
+        get_plugin_instance()->extapi.PyObject_CallMethod_ptr(sysmod.o, "settrace", "O", prev_trace_obj->o);
       prev_trace_obj.reset();
     }
     else
@@ -1057,7 +1060,6 @@ bool idapython_plugin_t::init()
     }
   }
 
-
   typedef void(*SignalHandlerPointer)(int);
   // catch unexpected abort()
   SignalHandlerPointer previousHandler = signal(SIGABRT, aborthandler);
@@ -1075,8 +1077,18 @@ bool idapython_plugin_t::init()
 
   if ( venv_requested )
   {
-    *extapi.Py_NoSiteFlag_ptr = 1;
-    msg("IDAPython: Requested to use virtual environment interpreter at %s\n", venv_exec_path.c_str());
+    if ( extapi.Py_NoSiteFlag_ptr == nullptr )
+    {
+      // TODO: NoSiteFlag is removed in Python >= 3.14. We need to switch to
+      // PyConfig-based initialization to bring back support for more recent
+      // python versions.
+      msg("IDAPython: Python library does not provide 'Py_NoSiteFlag'. Virtual environments are currently not supported in this version of python.\n");
+    }
+    else
+    {
+      *extapi.Py_NoSiteFlag_ptr = 1;
+      msg("IDAPython: Requested to use virtual environment interpreter at %s\n", venv_exec_path.c_str());
+    }
   }
 
   if ( Py_IsInitialized() == 0 )
@@ -1128,30 +1140,29 @@ bool idapython_plugin_t::init()
     if ( !qgetenv("IDAPYTHON_DYNLOAD_BASE", &dynload_base) )
       dynload_base = idadir(nullptr);
 
-    // Set IDAPYTHON_VERSION in Python
-    qstring init_code;
-    init_code.sprnt(
-            "IDAPYTHON_VERSION=(%d, %d, %d)\n"
-            "IDAPYTHON_REMOVE_CWD_SYS_PATH = %s\n"
-            "IDAPYTHON_DYNLOAD_BASE = r\"%s\"\n"
-            "IDAPYTHON_COMPAT_AUTOIMPORT_MODULES = %s\n"
-            "IDAPYTHON_IDAUSR_SYSPATH = %s\n"
-            "IDAPYTHON_OWNING_INTERPRETER = %s\n"
-            "IDAPYTHON_VENV_EXECUTABLE = r\"%s\"\n",
-            IDAVER_MAJOR, IDAVER_MINOR, IDAVER_PATCH,
-            config.remove_cwd_sys_path ? "True" : "False",
-            dynload_base.c_str(),
-            config.autoimport_compat_idaapi ? "True" : "False",
-            config.idausr_syspath ? "True" : "False",
-            owning_interpreter ? "True" : "False",
-            venv_exec_path.c_str()
-          );
+    PyObject *globals = _get_module_globals();
 
-    if ( extapi.PyRun_SimpleStringFlags_ptr(init_code.c_str(), nullptr) != 0 )
-    {
-      warning("IDAPython: error executing bootstrap code");
-      return false;
-    }
+    newref_t ida_ver(PyTuple_New(3));
+    PyTuple_SetItem(ida_ver.o, 0, PyLong_FromLong(IDAVER_MAJOR));
+    PyTuple_SetItem(ida_ver.o, 1, PyLong_FromLong(IDAVER_MINOR));
+    PyTuple_SetItem(ida_ver.o, 2, PyLong_FromLong(IDAVER_PATCH));
+    PyDict_SetItemString(globals, "IDAPYTHON_VERSION", ida_ver.o);
+
+    // Py_True and Py_False are immortal objects so the ref count does not need to be modified
+    PyDict_SetItemString(globals, "IDAPYTHON_REMOVE_CWD_SYS_PATH",
+                    config.remove_cwd_sys_path ? Py_True : Py_False);
+    PyDict_SetItemString(globals, "IDAPYTHON_COMPAT_AUTOIMPORT_MODULES",
+                    config.autoimport_compat_idaapi ? Py_True : Py_False);
+    PyDict_SetItemString(globals, "IDAPYTHON_IDAUSR_SYSPATH",
+                    config.idausr_syspath ? Py_True : Py_False);
+    PyDict_SetItemString(globals, "IDAPYTHON_OWNING_INTERPRETER",
+                    owning_interpreter ? Py_True : Py_False);
+
+    newref_t dynload_str(PyUnicode_FromString(dynload_base.c_str()));
+    PyDict_SetItemString(globals, "IDAPYTHON_DYNLOAD_BASE", dynload_str.o);
+
+    newref_t venv_str(PyUnicode_FromString(venv_exec_path.c_str()));
+    PyDict_SetItemString(globals, "IDAPYTHON_VENV_EXECUTABLE", venv_str.o);
 
     // Install extlang. Needs to be done before running init.py
     // in case it's calling idaapi.enable_extlang_python(1)
@@ -2092,7 +2103,7 @@ bool idapython_plugin_t::_cli_execute_line(const char *line)
         if ( sys_displayhook != nullptr )
         {
           //lint -esym(1788, res) is referenced only by its constructor or destructor
-          newref_t res(PyObject_CallFunctionObjArgs(sys_displayhook.o, py_result.o, nullptr));
+          newref_t res(idapython_plugin_t::get_instance()->extapi.PyObject_CallFunctionObjArgs_ptr(sys_displayhook.o, py_result.o, nullptr));
         }
         else if ( py_result.o != Py_None )
         {
@@ -2136,8 +2147,7 @@ bool idapython_plugin_t::_cli_find_completions(
   ref_t py_fc(get_idaapi_attr(S_IDAAPI_FINDCOMPLETIONS));
   if ( !py_fc )
     return false;
-
-  newref_t py_res(PyObject_CallFunction(py_fc.o, "si", line, x)); //lint !e605 !e1776
+  newref_t py_res(get_plugin_instance()->extapi.PyObject_CallFunction_ptr(py_fc.o, "si", line, x)); //lint !e605 !e1776
   if ( PyErr_Occurred() != nullptr )
     return false;
   return idapython_convert_cli_completions(
@@ -2188,12 +2198,36 @@ bool idapython_plugin_t::_handle_file(
     if ( !PyDict_Contains(globals, py_file_key.o) )
       PyDict_SetItem(globals, py_file_key.o, py_script.o);
   }
+  // Build script arguments list from IDC ARGV (skip first element which is script path)
+  newref_t py_script_args(PyList_New(0));
+  PyObject *script_args = nullptr;
+  if ( streq(idaapi_executor_func_name, S_IDAAPI_EXECSCRIPT) )
+  {
+    idc_value_t *idc_args = find_idc_gvar(S_IDC_ARGS_VARNAME);
+    if ( idc_args != nullptr )
+    {
+      idc_value_t attr;
+      char attr_name[20];
+      // Start from "1" to skip the script path
+      for ( int i = 1; ; i++ )
+      {
+        qsnprintf(attr_name, sizeof(attr_name), "%d", i);
+        if ( get_idcv_attr(&attr, idc_args, attr_name) != eOk )
+          break;
+        newref_t py_arg(PyUnicode_FromString(attr.c_str()));
+        PyList_Append(py_script_args.o, py_arg.o);
+      }
+      script_args = py_script_args.o;
+    }
+  }
+
   borref_t py_false(Py_False);
-  newref_t py_ret(PyObject_CallFunctionObjArgs(
+  newref_t py_ret(get_plugin_instance()->extapi.PyObject_CallFunctionObjArgs_ptr(
                           py_executor_func.o,
                           py_script.o,
                           globals,
                           py_false.o,
+                          script_args,
                           nullptr));
 
   // Failure at this point means the script was interrupted
@@ -2424,17 +2458,10 @@ PyObject *idapython_plugin_t::_get_module_globals_from_path(
 // Plugin init routine
 static plugmod_t *idaapi init()
 {
-#ifdef __MAC__
-  // on macOS we link weakly against python so it's best to verify that
-  // the python symbols have been resolved before using them
-  if ( Py_IsInitialized != nullptr )
-#endif
-  {
-    idapython_plugin_t *p = new idapython_plugin_t;
-    if ( p->init() )
-      return p;
-    delete p;
-  }
+  idapython_plugin_t *p = new idapython_plugin_t;
+  if ( p->init() )
+    return p;
+  delete p;
   return nullptr;
 }
 

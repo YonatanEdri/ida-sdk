@@ -1,15 +1,18 @@
-# -----------------------------------------------------------------------
+"""This is python wrapper code that will be inserted into final
+ida_hexrays.py"""
 #<pycode(py_hexrays)>
-import ida_funcs
+import ida_pro
+import ida_range
 import ida_idaapi
-
-hexrays_failure_t.__repr__ = lambda self: str("%x: %s" % (self.errea, self.desc()))
+import ida_typeinf
 
 # ---------------------------------------------------------------------
-# Renamings
-is_allowed_on_small_struni = accepts_small_udts
+# Renamings (from hexrays_micro)
 is_small_struni = is_small_udt
 mbl_array_t = mba_t
+
+# Renamings (from hexrays_ctree)
+is_allowed_on_small_struni = accepts_small_udts
 
 # NOTE: Strictly for backward-compatibily reasons (i.e., not
 # to break existing scripts), and will never be thrown.
@@ -31,18 +34,40 @@ def decompile(ea, hf=None, flags=0):
 
 # ---------------------------------------------------------------------
 # listify all list types
-import ida_idaapi
 ida_idaapi._listify_types(
+        qvector_lvar_t,
+        lvar_saved_infos_t,
         cinsnptrvec_t,
         ctree_items_t,
-        qvector_lvar_t,
         qvector_carg_t,
         qvector_ccase_t,
-        hexwarns_t,
         history_t,
-        lvar_saved_infos_t,
         ui_stroff_ops_t)
 
+# ---------------------------------------------------------------------
+# hexrays_failure_t
+hexrays_failure_t.__repr__ = lambda self: str("%x: %s" % (self.errea, self.desc()))
+
+# ---------------------------------------------------------------------
+# lvar_t properties
+lvar_t.used = property(lvar_t.used)
+lvar_t.typed = property(lvar_t.typed)
+lvar_t.mreg_done = property(lvar_t.mreg_done)
+lvar_t.has_nice_name = property(lvar_t.has_nice_name)
+lvar_t.is_unknown_width = property(lvar_t.is_unknown_width)
+lvar_t.has_user_info = property(lvar_t.has_user_info)
+lvar_t.has_user_name = property(lvar_t.has_user_name)
+lvar_t.has_user_type = property(lvar_t.has_user_type)
+lvar_t.is_result_var = property(lvar_t.is_result_var)
+lvar_t.is_arg_var = property(lvar_t.is_arg_var)
+lvar_t.is_fake_var = property(lvar_t.is_fake_var)
+lvar_t.is_overlapped_var = property(lvar_t.is_overlapped_var)
+lvar_t.is_floating_var = property(lvar_t.is_floating_var)
+lvar_t.is_spoiled_var = property(lvar_t.is_spoiled_var)
+lvar_t.is_mapdst_var = property(lvar_t.is_mapdst_var)
+
+# ---------------------------------------------------------------------
+# citem_t
 def citem_to_specific_type(self):
     """ cast the citem_t object to its more specific type, either cexpr_t or cinsn_t. """
 
@@ -135,11 +160,12 @@ def cinsn_details(self):
     return getattr(self, 'c' + opname)
 cinsn_t.details = property(cinsn_details)
 
+# ---------------------------------------------------------------------
+# cfuncptr_t / cfunc_t
 cfuncptr_t.__str__ = lambda self: str(self.__deref__())
 cfuncptr_t.__repr__ = lambda self: repr(self.__deref__())
 cfuncptr_t.__eq__ = lambda self, other: self.__ptrval__() == other.__ptrval__() if isinstance(other, cfuncptr_t) else False
 
-import ida_typeinf
 def cfunc_type(self):
     """ Get the function's return type tinfo_t object. """
     tif = ida_typeinf.tinfo_t()
@@ -166,31 +192,116 @@ cfuncptr_t.boundaries = property(lambda self: self.__deref__().get_boundaries())
 
 #pragma SWIG nowarn=+503
 
-lvar_t.used = property(lvar_t.used)
-lvar_t.typed = property(lvar_t.typed)
-lvar_t.mreg_done = property(lvar_t.mreg_done)
-lvar_t.has_nice_name = property(lvar_t.has_nice_name)
-lvar_t.is_unknown_width = property(lvar_t.is_unknown_width)
-lvar_t.has_user_info = property(lvar_t.has_user_info)
-lvar_t.has_user_name = property(lvar_t.has_user_name)
-lvar_t.has_user_type = property(lvar_t.has_user_type)
-lvar_t.is_result_var = property(lvar_t.is_result_var)
-lvar_t.is_arg_var = property(lvar_t.is_arg_var)
-lvar_t.is_fake_var = property(lvar_t.is_fake_var)
-lvar_t.is_overlapped_var = property(lvar_t.is_overlapped_var)
-lvar_t.is_floating_var = property(lvar_t.is_floating_var)
-lvar_t.is_spoiled_var = property(lvar_t.is_spoiled_var)
-lvar_t.is_mapdst_var = property(lvar_t.is_mapdst_var)
+#
+# Object ownership
+#
+def _call_with_transferrable_ownership(fun, *args):
+    e = args[0]
+    was_owned = e.thisown
+    res = fun(e, *args[1:])
+    # ATM, 'res' doesn't own the resulting cexpr_t.
+    # In case 'fun'
+    #   - created a new object: we want to own that one in case 'e' was owned
+    #   - didn't create a new object: we will remove & re-gain ownership on
+    #                                 the same underlying cexpr_t. No biggie.
+    if was_owned:
+        if res:
+            e._maybe_disown_and_deregister()
+            res._own_and_register()
+    else:
+        debug_hexrays_ctree("NOTE: call_with_transferrable_ownership() called with non-IDAPython-owned object. Is this intentional?")
+    return res
 
-# dictify all dict-like types
-def _map_as_dict(maptype, name, keytype, valuetype):
+def lnot(e):
+    return _call_with_transferrable_ownership(_ll_lnot, e)
+
+def make_ref(e):
+    return _call_with_transferrable_ownership(_ll_make_ref, e)
+
+def dereference(e, ptrsize, is_float=False):
+    return _call_with_transferrable_ownership(_ll_dereference, e, ptrsize, is_float)
+
+def call_helper(rettype, args, *rest):
+    res = _ll_call_helper(rettype, args, *rest)
+    if res:
+        res._own_and_register()
+        if type(args) == carglist_t:
+            args.thisown = False
+    return res
+
+def new_block():
+    res = _ll_new_block()
+    if res:
+        res._own_and_register()
+    return res
+
+def make_num(*args):
+    res = _ll_make_num(*args)
+    if res:
+        res._own_and_register()
+    return res
+
+def create_helper(*args):
+    res = _ll_create_helper(*args)
+    if res:
+        res._own_and_register()
+    return res
+
+# ----------------
+
+class __cbhooks_t(Hexrays_Hooks):
+
+    instances = []
+
+    def __init__(self, callback):
+        self.callback = callback
+        self.instances.append(self)
+        Hexrays_Hooks.__init__(self)
+
+    def mba_maturity(self, *args): return self.callback(hxe_mba_maturity, *args)
+    def maturity(self, *args): return self.callback(hxe_maturity, *args)
+    def interr(self, *args): return self.callback(hxe_interr, *args)
+    def print_func(self, *args): return self.callback(hxe_print_func, *args)
+    def func_printed(self, *args): return self.callback(hxe_func_printed, *args)
+    def open_pseudocode(self, *args): return self.callback(hxe_open_pseudocode, *args)
+    def switch_pseudocode(self, *args): return self.callback(hxe_switch_pseudocode, *args)
+    def refresh_pseudocode(self, *args): return self.callback(hxe_refresh_pseudocode, *args)
+    def close_pseudocode(self, *args): return self.callback(hxe_close_pseudocode, *args)
+    def keyboard(self, *args): return self.callback(hxe_keyboard, *args)
+    def right_click(self, *args): return self.callback(hxe_right_click, *args)
+    def double_click(self, *args): return self.callback(hxe_double_click, *args)
+    def curpos(self, *args): return self.callback(hxe_curpos, *args)
+    def create_hint(self, *args): return self.callback(hxe_create_hint, *args)
+    def text_ready(self, *args): return self.callback(hxe_text_ready, *args)
+    def populating_popup(self, *args): return self.callback(hxe_populating_popup, *args)
+    # NOTE: Do not add support for new notifications here;
+    # non-Hexrays_Hooks callbacks are deprecated.
+
+def install_hexrays_callback(callback):
+    "Deprecated. Please use Hexrays_Hooks instead"
+    h = __cbhooks_t(callback)
+    h.hook()
+    return True
+
+def remove_hexrays_callback(callback):
+    "Deprecated. Please use Hexrays_Hooks instead"
+    for inst in __cbhooks_t.instances:
+        if inst.callback == callback:
+            inst.unhook()
+            __cbhooks_t.instances.remove(inst)
+            return 1
+    return 0
+
+# ---------------------------------------------------------------------
+# Map helpers
+def _map_as_dict(_ida_module, maptype, name, keytype, valuetype):
 
     maptype.keytype = keytype
     maptype.valuetype = valuetype
 
     for fctname in ['begin', 'end', 'first', 'second', 'next', \
                         'find', 'insert', 'erase', 'clear', 'size']:
-        fct = getattr(_ida_hexrays, name + '_' + fctname)
+        fct = getattr(_ida_module, name + '_' + fctname)
         setattr(maptype, '__' + fctname, fct)
 
     maptype.__len__ = maptype.size
@@ -337,113 +448,10 @@ def _map_as_dict(maptype, name, keytype, valuetype):
         return default
     maptype.setdefault = _map_setdefault
 
-_map_as_dict(user_cmts_t, 'user_cmts', treeloc_t, citem_cmt_t)
-_map_as_dict(user_numforms_t, 'user_numforms', operand_locator_t, number_format_t)
-_map_as_dict(user_iflags_t, 'user_iflags', citem_locator_t, int)
-import ida_pro
-_map_as_dict(user_unions_t, 'user_unions', ida_idaapi.integer_types, ida_pro.intvec_t)
-_map_as_dict(eamap_t, 'eamap', ida_idaapi.long_type, cinsnptrvec_t)
-import ida_range
-_map_as_dict(boundaries_t, 'boundaries', cinsn_t, ida_range.rangeset_t)
-
-#
-# Object ownership
-#
-def _call_with_transferrable_ownership(fun, *args):
-    e = args[0]
-    was_owned = e.thisown
-    res = fun(e, *args[1:])
-    # ATM, 'res' doesn't own the resulting cexpr_t.
-    # In case 'fun'
-    #   - created a new object: we want to own that one in case 'e' was owned
-    #   - didn't create a new object: we will remove & re-gain ownership on
-    #                                 the same underlying cexpr_t. No biggie.
-    if was_owned:
-        if res:
-            e._maybe_disown_and_deregister()
-            res._own_and_register()
-    else:
-        debug_hexrays_ctree("NOTE: call_with_transferrable_ownership() called with non-IDAPython-owned object. Is this intentional?")
-    return res
-
-def lnot(e):
-    return _call_with_transferrable_ownership(_ll_lnot, e)
-
-def make_ref(e):
-    return _call_with_transferrable_ownership(_ll_make_ref, e)
-
-def dereference(e, ptrsize, is_float=False):
-    return _call_with_transferrable_ownership(_ll_dereference, e, ptrsize, is_float)
-
-def call_helper(rettype, args, *rest):
-    res = _ll_call_helper(rettype, args, *rest)
-    if res:
-        res._own_and_register()
-        if type(args) == carglist_t:
-            args.thisown = False
-    return res
-
-def new_block():
-    res = _ll_new_block()
-    if res:
-        res._own_and_register()
-    return res
-
-def make_num(*args):
-    res = _ll_make_num(*args)
-    if res:
-        res._own_and_register()
-    return res
-
-def create_helper(*args):
-    res = _ll_create_helper(*args)
-    if res:
-        res._own_and_register()
-    return res
-
-# ----------------
-
-class __cbhooks_t(Hexrays_Hooks):
-
-    instances = []
-
-    def __init__(self, callback):
-        self.callback = callback
-        self.instances.append(self)
-        Hexrays_Hooks.__init__(self)
-
-    def mba_maturity(self, *args): return self.callback(hxe_mba_maturity, *args)
-    def maturity(self, *args): return self.callback(hxe_maturity, *args)
-    def interr(self, *args): return self.callback(hxe_interr, *args)
-    def print_func(self, *args): return self.callback(hxe_print_func, *args)
-    def func_printed(self, *args): return self.callback(hxe_func_printed, *args)
-    def open_pseudocode(self, *args): return self.callback(hxe_open_pseudocode, *args)
-    def switch_pseudocode(self, *args): return self.callback(hxe_switch_pseudocode, *args)
-    def refresh_pseudocode(self, *args): return self.callback(hxe_refresh_pseudocode, *args)
-    def close_pseudocode(self, *args): return self.callback(hxe_close_pseudocode, *args)
-    def keyboard(self, *args): return self.callback(hxe_keyboard, *args)
-    def right_click(self, *args): return self.callback(hxe_right_click, *args)
-    def double_click(self, *args): return self.callback(hxe_double_click, *args)
-    def curpos(self, *args): return self.callback(hxe_curpos, *args)
-    def create_hint(self, *args): return self.callback(hxe_create_hint, *args)
-    def text_ready(self, *args): return self.callback(hxe_text_ready, *args)
-    def populating_popup(self, *args): return self.callback(hxe_populating_popup, *args)
-    # NOTE: Do not add support for new notifications here;
-    # non-Hexrays_Hooks callbacks are deprecated.
-
-def install_hexrays_callback(callback):
-    "Deprecated. Please use Hexrays_Hooks instead"
-    h = __cbhooks_t(callback)
-    h.hook()
-    return True
-
-def remove_hexrays_callback(callback):
-    "Deprecated. Please use Hexrays_Hooks instead"
-    for inst in __cbhooks_t.instances:
-        if inst.callback == callback:
-            inst.unhook()
-            __cbhooks_t.instances.remove(inst)
-            return 1
-    return 0
-
+_map_as_dict(_ida_hexrays, user_numforms_t, 'user_numforms', operand_locator_t, number_format_t)
+_map_as_dict(_ida_hexrays, user_cmts_t, 'user_cmts', treeloc_t, citem_cmt_t)
+_map_as_dict(_ida_hexrays, user_iflags_t, 'user_iflags', citem_locator_t, int)
+_map_as_dict(_ida_hexrays, user_unions_t, 'user_unions', ida_idaapi.integer_types, ida_pro.intvec_t)
+_map_as_dict(_ida_hexrays, eamap_t, 'eamap', ida_idaapi.long_type, cinsnptrvec_t)
+_map_as_dict(_ida_hexrays, boundaries_t, 'boundaries', cinsn_t, ida_range.rangeset_t)
 #</pycode(py_hexrays)>

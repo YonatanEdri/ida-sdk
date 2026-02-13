@@ -1,6 +1,6 @@
 /*
  *      Interactive disassembler (IDA).
- *      Copyright (c) 1990-2025 Hex-Rays
+ *      Copyright (c) 1990-2026 Hex-Rays
  *      ALL RIGHTS RESERVED.
  *
  */
@@ -15,7 +15,7 @@
 #define IDPOPT_STR 1    ///< string constant (char *)
 #define IDPOPT_NUM 2    ///< number (uval_t *)
 #define IDPOPT_BIT 3    ///< bit, yes/no (int *)
-#define IDPOPT_I64 5    ///< 64bit number (int64 *)
+#define IDPOPT_I64 5    ///< 64-bit number (int64 *)
 #define IDPOPT_CST 6    ///< lexer (lexer_t*)
                         ///< Custom type, starting with a '{'
                         ///< Values of this type should be handled by

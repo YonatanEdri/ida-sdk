@@ -1,6 +1,6 @@
 /*
  *      Decompiler project
- *      Copyright (c) 2005-2025 Hex-Rays SA <support@hex-rays.com>
+ *      Copyright (c) 2005-2026 Hex-Rays SA <support@hex-rays.com>
  *      ALL RIGHTS RESERVED.
  *
  *      Verify ctree consistency
@@ -9,7 +9,25 @@
 
 #include "allmicro.h"
 
-#define CFAIL_QASSERT(code, e) do { if ( under_debugger ) { body.dump_graph(e, "failure"); BPT; } INTERR(code); } while(0)
+static int got_interr = 0;
+
+static NORETURN void ctree_qassert(int code, const citem_t *e, const cinsn_t &body)
+{
+  if ( got_interr++ == 0 )
+  {
+    msg("CITEM %a: %s\n", e->ea, e->dstr());
+    if ( e->is_expr() )
+      msg("TYPE: %s\n", ((cexpr_t *)e)->type.dstr());
+    if ( under_debugger )
+    {
+      body.dump_graph(e, "failure");
+      BPT;
+    }
+  }
+  INTERR(code);
+}
+
+#define CFAIL_QASSERT(code, e) ctree_qassert(code, e, body)
 
 //-------------------------------------------------------------------------
 void cnumber_t::verify() const
@@ -50,7 +68,7 @@ void cfunc_t::verify_switch(const cswitch_t &sw) const
     INTERR(50676); // ctree: wrong number of switch cases
   sw.mvnf.verify();
   bool seen_default = false;
-  std::set<uint64> seen_values;
+  qset<uint64> seen_values;
   for ( ccases_t::const_iterator p=sw.cases.begin(); p != sw.cases.end(); ++p )
   {
     const ccase_t &cc = *p;
@@ -112,8 +130,14 @@ void cfunc_t::verify_insn(const cinsn_t *i) const
           CFAIL_QASSERT(52738, i); // ctree: 'try' without any 'catch' clauses?!
       }
       for ( const ccatch_t &cc : i->ctry->catchs )
+      {
         for ( const catchexpr_t &ce : cc.exprs )
           verify_expr(i, &ce.obj);
+        // FIXME: once we are allowed to modify the ctree design,
+        // replace the vector of expressions with just one expression.
+        if ( cc.exprs.size() > 1 )
+          CFAIL_QASSERT(52931, i); // ctree: too many catch expressions
+      }
       break;
   }
   // check instruction address
@@ -571,7 +595,8 @@ MEM:
           && !e->type.get_ptrarr_object().equals_to(udm.type.get_array_element()) )
         {
           tinfo_t tmp = remove_pointer(e->type);
-          if ( !tmp.is_func() )
+          // allow if expression ultimately points to a function
+          if ( !tmp.is_func() && !tmp.get_ptrarr_object().is_func() )
             CFAIL_QASSERT(50720, e); // ctree: the expression type must be equal to the member type
         }
 #endif
@@ -720,7 +745,7 @@ void cfunc_t::verify(allow_unused_labels_t _aul, bool always) const
   // check that all items are distinct
   struct ida_local item_address_collector_t : public ctree_visitor_t
   {
-    std::set<citem_t *> items;
+    qset<citem_t *> items;
     item_address_collector_t() : ctree_visitor_t(CV_FAST) {}
     int add_item(citem_t *i)
     {

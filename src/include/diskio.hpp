@@ -1,6 +1,6 @@
 /*
  *      Interactive disassembler (IDA).
- *      Copyright (c) 1990-2025 Hex-Rays
+ *      Copyright (c) 1990-2026 Hex-Rays
  *      ALL RIGHTS RESERVED.
  *
  */
@@ -35,6 +35,12 @@
 /// or the specified subdirectory (see \ref SUBDIR)
 
 idaman THREAD_SAFE const char *ida_export idadir(const char *subdir);
+
+
+/// Get the directory where IDA is installed.
+/// Normally it is the same as idadir(nullptr) but on Mac the directory
+/// is higher (ida.app).
+idaman void ida_export get_install_root(qstring *out);
 
 
 /// Search for IDA system file.

@@ -10,6 +10,7 @@
 //#define LDEB            // enable debug print in this module
 
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #include <pthread.h>
 #include <dirent.h>
 
@@ -240,6 +241,26 @@ static long qptrace(__ptrace_request request, pid_t pid, void *addr, void *data)
 #endif
   return code;
 }
+
+//--------------------------------------------------------------------------
+#if defined(__ARM__) && !defined(__X86__)
+static bool kernel_needs_hwss_detach_workaround()
+{
+  static int cached = -1;
+  if ( cached < 0 )
+  {
+    cached = 0;
+    struct utsname uts;
+    if ( uname(&uts) == 0 )
+    {
+      int major = 0;
+      if ( sscanf(uts.release, "%d", &major) == 1 && major < 5 )
+        cached = 1;
+    }
+  }
+  return cached != 0;
+}
+#endif
 
 //--------------------------------------------------------------------------
 #ifdef LDEB
@@ -1314,6 +1335,8 @@ int linux_debmod_t::dbg_thaw_threads(thid_t tid, bool exclude)
     if ( ti.state == STOPPED || ti.state == DYING )
     {
       __ptrace_request request = ti.single_step ? PTRACE_SINGLESTEP : PTRACE_CONT;
+      if ( ti.single_step )
+        ever_singlestepped = true;
 #ifdef LDEB
       char ostate = getstate(ti.tid);
 #endif
@@ -1813,6 +1836,8 @@ void linux_debmod_t::cleanup(void)
 
   complained_shlib_bpt = false;
   bpts.clear();
+  using_seize = false;
+  ever_singlestepped = false;
 
   tdb_delete();
   erase_internal_bp(birth_bpt);
@@ -2121,8 +2146,40 @@ drc_t idaapi linux_debmod_t::dbg_start_process(
 drc_t idaapi linux_debmod_t::dbg_attach_process(pid_t _pid, int /*event_id*/, int flags, qstring * /*errbuf*/)
 {
   is_dll = (flags & DBG_PROC_IS_DLL) != 0;
-  if ( qptrace(PTRACE_ATTACH, _pid, nullptr, nullptr) == 0
-    && handle_process_start(_pid, AMT_ATTACH_NORMAL) )
+
+  // Try PTRACE_SEIZE first (required for ART runtime on Android 14+).
+  // PTRACE_ATTACH sends SIGSTOP to the tracee, but other signals may race in first.
+  // ART uses SIGSEGV internally for null-pointer checks in JIT code; intercepting
+  // such a signal during attach disrupts ART's signal handling and causes crashes.
+  // PTRACE_SEIZE + PTRACE_INTERRUPT avoids this by stopping cleanly without signals.
+  // Set IDA_FORCE_PTRACE_ATTACH=1 to revert to the traditional PTRACE_ATTACH method.
+  bool attached = false;
+  if ( !qgetenv("IDA_FORCE_PTRACE_ATTACH", nullptr)
+    && qptrace(PTRACE_SEIZE, _pid, nullptr, nullptr) == 0 )
+  {
+    if ( qptrace(PTRACE_INTERRUPT, _pid, nullptr, nullptr) == 0 )
+    {
+      using_seize = true;
+      attached = true;
+      ldeb("dbg_attach_process: using PTRACE_SEIZE for pid %d\n", _pid);
+    }
+    else
+    {
+      // PTRACE_INTERRUPT failed, detach and fall back to PTRACE_ATTACH
+      qptrace(PTRACE_DETACH, _pid, nullptr, nullptr);
+    }
+  }
+
+  // Fall back to PTRACE_ATTACH (traditional method)
+  if ( !attached )
+  {
+    using_seize = false;
+    if ( qptrace(PTRACE_ATTACH, _pid, nullptr, nullptr) != 0 )
+      return DRC_FAILED;
+    ldeb("dbg_attach_process: using PTRACE_ATTACH for pid %d\n", _pid);
+  }
+
+  if ( handle_process_start(_pid, AMT_ATTACH_NORMAL) )
   {
     gen_library_events(_pid); // detect all loaded libraries
     return DRC_OK;
@@ -2141,6 +2198,13 @@ void linux_debmod_t::cleanup_signals(void)
     {
       thread_info_t &ti = p->second;
       ldeb("cleanup_signals:\n");
+      // With PTRACE_SEIZE + PTRACE_INTERRUPT, there's no pending signal to drain -
+      // the stop is a ptrace-stop (PTRACE_EVENT_STOP), not a signal-delivery-stop.
+      if ( using_seize )
+      {
+        ti.waiting_sigstop = false;
+        continue;
+      }
       log(ti.tid, "must be STOPPED\n");
       QASSERT(30181, ti.state == STOPPED);
       qptrace(PTRACE_CONT, ti.tid, 0, 0);
@@ -2175,6 +2239,21 @@ drc_t idaapi linux_debmod_t::dbg_detach_process(void)
     thread_info_t &ti = p->second;
     if ( ti.tid == process_handle )
       had_pid = true;
+
+#if defined(__ARM__) && !defined(__X86__)
+    // On some older ARM64 kernels, PTRACE_DETACH after PTRACE_SINGLESTEP
+    // can leave the process in a bad state. Work around by doing
+    // PTRACE_CONT + SIGSTOP before detaching.
+    if ( ever_singlestepped && kernel_needs_hwss_detach_workaround() )
+    {
+      if ( qptrace(PTRACE_CONT, ti.tid, nullptr, nullptr) == 0 )
+      {
+        qkill(ti.tid, SIGSTOP);
+        int status = 0;
+        check_for_signal(&status, ti.tid, 1000);
+      }
+    }
+#endif
 
     ok = qptrace(PTRACE_DETACH, ti.tid, nullptr, nullptr) == 0;
     log(-1, "detach tid %d: ok=%d\n", ti.tid, ok);

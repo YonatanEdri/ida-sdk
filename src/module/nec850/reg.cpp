@@ -7,6 +7,7 @@
  *
  */
 #include "necv850.hpp"
+#include "notify_codes.hpp"
 #include "ins.hpp"
 #include <loader.hpp>
 #include <segregs.hpp>
@@ -17,18 +18,146 @@ int data_id;
 //-------------------------------------------------------------------------
 void nec850_t::save_all_options()
 {
-  helper.altset(GP_EA_IDX, ea2node(g_gp_ea));
   helper.altset(CTBP_EA_IDX, ea2node(g_ctbp_ea));
+  helper.altset(GP_EA_IDX, ea2node(g_gp_ea));
   helper.altset(TP_EA_IDX, ea2node(g_tp_ea));
+  helper.easet_idx(EP_EA_IDX, g_ep_ea, atag);
+  helper.altset(-1, idpflags);
+  helper.altset(-2, V850_MODULE_VERSION);
 }
 
 //-------------------------------------------------------------------------
 // read all procmod data from the idb
 void nec850_t::load_from_idb()
 {
-  g_gp_ea = node2ea(helper.altval(GP_EA_IDX));
   g_ctbp_ea = node2ea(helper.altval(CTBP_EA_IDX));
+  g_gp_ea = node2ea(helper.altval(GP_EA_IDX));
   g_tp_ea = node2ea(helper.altval(TP_EA_IDX));
+  // no need to upgrade G_EP_EA because no value means BADADDR
+  g_ep_ea = helper.eaget_idx(EP_EA_IDX, atag);
+  size_t saved_version = helper.altval(-2);
+  if ( saved_version == 0 )
+  {
+    // in the old IDB we don't have saved IDPFLAGS
+    // but always allow R1 in macros.
+    idpflags = IDP_MACRO_HIDDEN_R1;
+    saved_version = 1;
+  }
+  else
+  {
+    idpflags = (uint16)helper.altval(-1);
+  }
+  // no need to upgrade IDP_*_CALLEE_SAVED because we consider all
+  // registers as FREE by default
+}
+
+//-------------------------------------------------------------------------
+ssize_t nec850_t::get_global_register(
+        ea_t reg_value,
+        uint32 callee_saved_flag) const
+{
+  using namespace nec850_module_t;
+  if ( reg_value != BADADDR )
+    return FIXED;
+  bool callee_saved = (idpflags & callee_saved_flag) != 0;
+  return callee_saved ? CALLEE_SAVED : FREE;
+}
+
+//-------------------------------------------------------------------------
+void nec850_t::set_global_register(
+        ea_t *reg_value,
+        uint32 callee_saved_flag,
+        int srnum,
+        va_list va)
+{
+  using namespace nec850_module_t;
+  reg_usage_t usage = va_argi(va, reg_usage_t);
+  ea_t fixed_value = va_arg(va, ea_t);
+  if ( usage == FIXED && fixed_value == BADADDR )
+    usage = CALLEE_SAVED;
+  ea_t new_value;
+  if ( usage == FIXED )
+  {
+    new_value = fixed_value;
+  }
+  else
+  {
+    new_value = BADADDR;
+    setflag(idpflags, callee_saved_flag, usage == CALLEE_SAVED);
+  }
+  update_global_register(reg_value, new_value, callee_saved_flag, srnum);
+  save_all_options();
+}
+
+//-------------------------------------------------------------------------
+void nec850_t::update_global_register(
+        ea_t *reg_value,
+        ea_t new_value,
+        uint32 callee_saved_flag,
+        int srnum)
+{
+  if ( new_value != *reg_value )
+  {
+    *reg_value = new_value;
+    set_default_sreg_value(nullptr, srnum, new_value);
+  }
+  if ( callee_saved_flag != 0 && new_value != BADADDR )
+    setflag(idpflags, callee_saved_flag, true);
+}
+
+//-------------------------------------------------------------------------
+static const cfgopt_t options[] =
+{
+  CFGOPT_B("V850_MACRO_HIDDEN_R1", nec850_t, idpflags, ushort(IDP_MACRO_HIDDEN_R1)),
+  CFGOPT_B("V850_GP_CALLEE_SAVED", nec850_t, idpflags, ushort(IDP_GP_CALLEE_SAVED)),
+  CFGOPT_B("V850_TP_CALLEE_SAVED", nec850_t, idpflags, ushort(IDP_TP_CALLEE_SAVED)),
+  CFGOPT_B("V850_EP_CALLEE_SAVED", nec850_t, idpflags, ushort(IDP_EP_CALLEE_SAVED)),
+  CFGOPT_B("V850_R2_CALLEE_SAVED", nec850_t, idpflags, ushort(IDP_R2_CALLEE_SAVED)),
+};
+
+
+//--------------------------------------------------------------------------
+static const cfgopt_t *find_option(const char *name)
+{
+  for ( auto &option : options )
+    if ( streq(option.name, name) )
+      return &option;
+  return nullptr;
+}
+
+//--------------------------------------------------------------------------
+int idaapi optionscb(int field_id, form_actions_t &fa)
+{
+  constexpr struct
+  {
+    int ea;
+    int callee_saved;
+
+  } fids[] =
+  {
+    { 1, 11 },
+    { 2, 12 },
+    { 3, 13 },
+  };
+  for ( const auto &fid : fids )
+  {
+    if ( field_id != fid.ea )
+      continue;
+    ea_t ea;
+    fa.get_ea_value(field_id, &ea);
+    if ( ea != BADADDR )
+    {
+      // the fixed values are always callee-saved
+      ushort v = true;
+      fa.set_checkbox_value(fid.callee_saved, &v);
+      fa.enable_field(fid.callee_saved, false);
+    }
+    else
+    {
+      fa.enable_field(fid.callee_saved, true);
+    }
+  }
+  return 1;
 }
 
 //------------------------------------------------------------------
@@ -38,57 +167,105 @@ const char *nec850_t::set_idp_options(
         const void * value,
         bool idb_loaded)
 {
-  ea_t new_gp_ea = g_gp_ea;
   ea_t new_ctbp_ea = g_ctbp_ea;
+  ea_t new_gp_ea = g_gp_ea;
   ea_t new_tp_ea = g_tp_ea;
+  ea_t new_ep_ea = g_ep_ea;
   if ( keyword != nullptr )
   {
-    if ( streq(keyword, "GP_EA") )
+    const cfgopt_t *opt = find_option(keyword);
+    if ( opt != nullptr )
     {
-      if ( value_type != IDPOPT_NUM )
-        return IDPOPT_BADTYPE;
-      new_gp_ea = *((uval_t *)value);
-      goto SAVE;
+      const char *errmsg = opt->apply(value_type, value, this);
+      if ( errmsg != IDPOPT_OK )
+        return errmsg;
     }
-    if ( streq(keyword, "CTBP_EA") )
+    else if ( streq(keyword, "V850_CTBP_EA") )
     {
       if ( value_type != IDPOPT_NUM )
         return IDPOPT_BADTYPE;
       new_ctbp_ea = *((uval_t *)value);
-      goto SAVE;
     }
-    if ( streq(keyword, "TP_EA") )
+    else if ( streq(keyword, "V850_GP_EA") )
+    {
+      if ( value_type != IDPOPT_NUM )
+        return IDPOPT_BADTYPE;
+      new_gp_ea = *((uval_t *)value);
+    }
+    else if ( streq(keyword, "V850_TP_EA") )
     {
       if ( value_type != IDPOPT_NUM )
         return IDPOPT_BADTYPE;
       new_tp_ea = *((uval_t *)value);
-      goto SAVE;
     }
-    return IDPOPT_BADKEY;
+    else if ( streq(keyword, "V850_EP_EA") )
+    {
+      if ( value_type != IDPOPT_NUM )
+        return IDPOPT_BADTYPE;
+      new_ep_ea = *((uval_t *)value);
+    }
+    else
+    {
+      return IDPOPT_BADKEY;
+    }
   }
-
-  static const char form[] =
-    "NEC V850x analyzer options\n"
-    "\n"
-    " <~G~lobal Pointer address:$::18::>\n"
-    " <CALLT ~B~ase pointer    :$::18::>\n"
-    " <~T~ext Pointer address  :$::18::>\n"
-    "\n"
-    "\n"
-    "\n";
-  CASSERT(sizeof(new_gp_ea) == sizeof(ea_t));
-  CASSERT(sizeof(new_ctbp_ea) == sizeof(ea_t));
-  CASSERT(sizeof(new_tp_ea) == sizeof(ea_t));
-  if ( ask_form(form, &new_gp_ea, &new_ctbp_ea, &new_tp_ea) == ASKBTN_YES )
+  else
   {
-SAVE:
-    set_canonical_sreg(new_gp_ea, g_gp_ea, srGP);
-    set_canonical_sreg(new_ctbp_ea, g_ctbp_ea, srCTBP);
-    set_canonical_sreg(new_tp_ea, g_tp_ea, srTP);
-    if ( idb_loaded )
-      save_all_options();
+    static const char form[] =
+"HELP\n"
+"V850 specific options\n"
+"\n"
+" Allow hidden R1 modifications\n"
+"\n"
+"       Allow hidden modification of the R1 register in macros\n"
+"ENDHELP\n"
+// 2abceghlt
+"NEC V850x analyzer options\n"
+"%/\n"
+" <CALLT ~B~ase pointer     :$::18::>\n"
+" <~G~lobal Pointer address :$1::18::>\n"
+" <~T~ext Pointer address   :$2::18::>\n"
+" <~E~lement Pointer address:$3::18::>\n"
+"\n"
+" <Allow ~h~idden R1 modifications:C>\n"
+" <GP is ~c~allee-saved:C11>\n"
+" <TP is c~a~llee-saved:C12>\n"
+" <EP is ca~l~lee-saved:C13>\n"
+" <R~2~ is callee-saved:C>>\n"
+"\n"
+"\n";
+    CASSERT(sizeof(new_ctbp_ea) == sizeof(ea_t));
+    CASSERT(sizeof(new_gp_ea) == sizeof(ea_t));
+    CASSERT(sizeof(new_tp_ea) == sizeof(ea_t));
+    CASSERT(sizeof(new_ep_ea) == sizeof(ea_t));
+    ushort tmpflags = 0;
+    setflag(tmpflags, 0x01, macro_hidden_r1());
+    setflag(tmpflags, 0x02, is_gp_callee_saved());
+    setflag(tmpflags, 0x04, is_tp_callee_saved());
+    setflag(tmpflags, 0x08, is_ep_callee_saved());
+    setflag(tmpflags, 0x10, is_r2_callee_saved());
+    if ( ask_form(form,
+                  optionscb,
+                  &new_ctbp_ea,
+                  &new_gp_ea,
+                  &new_tp_ea,
+                  &new_ep_ea,
+                  &tmpflags) != ASKBTN_YES )
+    {
+      return IDPOPT_OK;
+    }
+    setflag(idpflags, IDP_MACRO_HIDDEN_R1, (tmpflags & 0x01) != 0);
+    setflag(idpflags, IDP_GP_CALLEE_SAVED, (tmpflags & 0x02) != 0);
+    setflag(idpflags, IDP_TP_CALLEE_SAVED, (tmpflags & 0x04) != 0);
+    setflag(idpflags, IDP_EP_CALLEE_SAVED, (tmpflags & 0x08) != 0);
+    setflag(idpflags, IDP_R2_CALLEE_SAVED, (tmpflags & 0x10) != 0);
   }
-
+  update_global_register(&g_ctbp_ea, new_ctbp_ea, 0, srCTBP);
+  update_global_register(&g_gp_ea, new_gp_ea, IDP_GP_CALLEE_SAVED, srGP);
+  update_global_register(&g_tp_ea, new_tp_ea, IDP_TP_CALLEE_SAVED, srTP);
+  update_global_register(&g_ep_ea, new_ep_ea, IDP_EP_CALLEE_SAVED, srEP);
+  if ( idb_loaded )
+    save_all_options();
   return IDPOPT_OK;
 }
 
@@ -125,7 +302,7 @@ static const asm_t nec850_asm =
   nullptr,                          // no tbytes
   nullptr,                          // no packreal
   "#d dup(#v)",                     //".db.#s(b,w) #d,#v"
-  ".byte (%s) ?",                   // uninited data (reserve space) ;?
+  ".space %s",                      // uninited data (reserve space)
   ".set",                           // 'equ' Used if AS_UNEQU is set
   nullptr,                          // seg prefix
   "PC",                             // a_curip
@@ -183,13 +360,29 @@ static const char *const lnames[] =
   nullptr
 };
 
+//-------------------------------------------------------------------------
+static void nec850_get_abi_info(qstrvec_t *names, qstrvec_t *opts)
+{
+  names->push_back("rh850-8byte_align");
+  names->push_back("ghs");
+  names->push_back("oldgcc-8byte_align");
+  opts->push_back(
+    "8byte_align:"
+    "'double' and 'long long' types to be aligned on 8-byte boundaries"
+    "#8-byte types alignment");
+}
+
 //--------------------------------------------------------------------------
-ssize_t idaapi idb_listener_t::on_event(ssize_t code, va_list)
+ssize_t idaapi pm_idb_listener_t::on_event(ssize_t code, va_list va)
 {
   switch ( code )
   {
     // all options are saved immediately after the change
-    // case idb_event::savebase:
+#ifdef CVT64
+    case idb_event::closebase:
+      pm.save_all_options();
+      break;
+#endif
 
     case idb_event::segm_moved: // A segment is moved
                                 // Fix processor dependent address sensitive information
@@ -202,6 +395,31 @@ ssize_t idaapi idb_listener_t::on_event(ssize_t code, va_list)
       // }
       break;
 
+    case idb_event::renamed:
+      {
+        ea_t ea           = va_arg(va, ea_t);
+        const char *_name = va_arg(va, const char *);
+        bool local_name   = va_argi(va, bool);
+        if ( local_name )
+          break;
+        qstring name;
+        if ( !cleanup_name(&name, ea, _name) )
+          break;
+        if ( name == "callt_table" || name == "ghs_call_table" )
+          pm.check_call_table(ea);
+      }
+      break;
+
+    case idb_event::segm_added:
+    case idb_event::segm_name_changed:
+      {
+        const segment_t *s = va_arg(va, segment_t *);
+        qstring name;
+        if ( get_segm_name(&name, s) > 0 && name == ".callt" )
+          set_name(s->start_ea, "___callt_table", SN_FORCE|SN_MULTI);
+      }
+      break;
+
     case idb_event::func_added:
     case idb_event::func_deleted:
     case idb_event::set_func_start:
@@ -210,6 +428,14 @@ ssize_t idaapi idb_listener_t::on_event(ssize_t code, va_list)
     case idb_event::func_tail_deleted:
     case idb_event::tail_owner_changed:
     case idb_event::frame_deleted:
+      invalidate_regfinder_cache();
+      break;
+
+    case idb_event::compiler_changed:
+      {
+        bool adjust_inf_fields = va_argi(va, bool);
+        pm.nec850_set_abi(adjust_inf_fields);
+      }
       invalidate_regfinder_cache();
       break;
 
@@ -250,6 +476,7 @@ ssize_t idaapi nec850_t::on_event(ssize_t msgid, va_list va)
       break;
 
     case processor_t::ev_newfile:
+      nec850_set_abi(true);
       save_all_options();
       break;
 
@@ -267,42 +494,43 @@ ssize_t idaapi nec850_t::on_event(ssize_t msgid, va_list va)
       invalidate_regfinder_cache();
       [[fallthrough]];
     case processor_t::ev_oldfile:
+      nec850_set_abi(false);
       load_from_idb();
-      break;
-
-    case processor_t::ev_creating_segm:
-      {
-        segment_t *s = va_arg(va, segment_t *);
-        // Set default value of DS register for all segments
-        set_default_dataseg(s->sel);
-        s->defsr[srGP-ph.reg_first_sreg] = BADADDR;
-        s->defsr[srTP-ph.reg_first_sreg] = BADADDR;
-        s->defsr[srCTBP-ph.reg_first_sreg] = BADADDR;
-        set_selector(s->sel, 0);
-      }
       break;
 
     case processor_t::ev_is_sane_insn:
       {
         const insn_t &insn = *va_arg(va, insn_t *);
         int no_crefs = va_arg(va, int);
-        code = nec850_is_sane_insn(insn, no_crefs) == 1 ? 1 : -1;
+        code = is_sane_insn(insn, no_crefs) ? 1 : -1;
         break;
+      }
+
+    case processor_t::ev_is_align_insn:
+      {
+        ea_t ea = va_arg(va, ea_t);
+        return v850_is_align_insn(ea);
       }
 
     case processor_t::ev_may_be_func:
       {
         const insn_t &insn = *va_arg(va, insn_t *);
-        code = nec850_may_be_func(insn);
+        code = may_be_func(insn);
       }
       break;
+
+    case processor_t::ev_is_call_insn:
+      {
+        const insn_t *insn = va_arg(va, insn_t *);
+        return is_call_insn(*insn) ? 1 : -1;
+      }
 
     case processor_t::ev_is_ret_insn:
       {
         const insn_t &insn = *va_arg(va, insn_t *);
         uchar flags = va_argi(va, uchar);
         bool strict = (flags & IRI_RET_LITERALLY) != 0;
-        code = nec850_is_return(insn, strict) ? 1 : -1;
+        code = is_return_insn(insn, strict) ? 1 : -1;
       }
       break;
 
@@ -362,12 +590,8 @@ ssize_t idaapi nec850_t::on_event(ssize_t msgid, va_list va)
         return out_opnd(*ctx, *op) ? 1 : -1;
       }
 
-    case processor_t::ev_is_switch:
-      {
-        switch_info_t *si = va_arg(va, switch_info_t *);
-        const insn_t *insn = va_arg(va, const insn_t *);
-        return nec850_is_switch(si, *insn) ? 1 : -1;
-      }
+    // case processor_t::ev_is_switch:
+    // this proc module recognizes switch only in emu()
 
     case processor_t::ev_is_sp_based:
       {
@@ -378,18 +602,113 @@ ssize_t idaapi nec850_t::on_event(ssize_t msgid, va_list va)
         return 1;
       }
 
+    case processor_t::ev_coagulate_dref:
+      {
+        ea_t from = va_arg(va, ea_t);
+        ea_t to = va_arg(va, ea_t);
+        bool may_define = va_argi(va, bool);
+        ea_t *code_ea = va_arg(va, ea_t *);
+        if ( from != BADADDR || !may_define || *code_ea != to )
+          break; // only for AU_FINAL
+        // look for .word <locals size>; call <ghs_save_with_alloc>;
+        const segment_t *seg = getseg(to);
+        if ( seg->type == SEG_CODE && seg->end_ea - to >= 6 )
+        {
+          if ( get_word(to) > 0x1000 )
+            break; // too huge locals size
+          insn_t insn;
+          if ( decode_insn(&insn, to + 2) <= 0 )
+            break;
+          if ( insn.itype != NEC850_JARL && insn.itype != NEC850_CALLT )
+            break;
+          if ( !is_special_save_alloc_func(insn) )
+            break;
+          *code_ea = to + 2;
+          break; // continue with the new address
+        }
+      }
+      break;
+
     case processor_t::ev_create_func_frame:
       {
         func_t *pfn = va_arg(va, func_t *);
-        nec850_create_func_frame(pfn);
+        create_func_frame(pfn);
+        return 1;
+      }
+
+    case processor_t::ev_analyze_prolog:
+      {
+        ea_t ea = va_arg(va, ea_t);
+        func_t *pfn = get_func(ea);
+        if ( pfn != nullptr )
+          create_func_frame(pfn, true);
         return 1;
       }
 
     case processor_t::ev_get_frame_retsize:
       {
         int *frsize = va_arg(va, int *);
-        const func_t *pfn = va_arg(va, const func_t *);
-        *frsize = nec850_get_frame_retsize(pfn);
+        // const func_t *pfn = va_arg(va, const func_t *);
+        // NEC850 doesn't use stack for function return addresses
+        *frsize = 0;
+        return 1;
+      }
+
+    case processor_t::ev_lower_func_type:
+      {
+        intvec_t *argnums = va_arg(va, intvec_t *);
+        func_type_data_t *fti = va_arg(va, func_type_data_t *);
+        nec850_lower_func_arg_types(argnums, *fti);
+        return 1;
+      }
+
+    case processor_t::ev_calc_arglocs:
+      {
+        func_type_data_t *fti = va_arg(va, func_type_data_t *);
+        return calc_nec850_arglocs(fti, 0) ? 1 : -1;
+      }
+
+    case processor_t::ev_calc_varglocs:
+      {
+        func_type_data_t *fti = va_arg(va, func_type_data_t *);
+        /*regobjs_t *regargs =*/ va_arg(va, regobjs_t *);
+        /*relobj_t *stkargs =*/ va_arg(va, relobj_t *);
+        int nfixed = va_arg(va, int);
+        return calc_nec850_arglocs(fti, nfixed) ? 1 : -1;
+      }
+
+    case processor_t::ev_calc_retloc:
+      {
+        argloc_t *retloc = va_arg(va, argloc_t *);
+        const tinfo_t *type = va_arg(va, const tinfo_t *);
+        callcnv_t cc        = va_arg(va, callcnv_t);
+        return calc_nec850_retloc(retloc, *type, cc) ? 1 : -1;
+      }
+
+    case processor_t::ev_use_arg_types:
+      {
+        ea_t ea               = va_arg(va, ea_t);
+        func_type_data_t *fti = va_arg(va, func_type_data_t *);
+        funcargvec_t *rargs   = va_arg(va, funcargvec_t *);
+        use_nec850_arg_types(ea, fti, rargs);
+        return 1;
+      }
+
+    case processor_t::ev_use_regarg_type:
+      {
+        int *used                 = va_arg(va, int *);
+        ea_t ea                   = va_arg(va, ea_t);
+        const funcargvec_t *rargs = va_arg(va, const funcargvec_t *);
+        *used = use_nec850_regarg_type(ea, *rargs);
+        return 1;
+      }
+
+    case processor_t::ev_get_cc_regs:
+      {
+        callregs_t *callregs = va_arg(va, callregs_t *);
+        callcnv_t cc = va_arg(va, callcnv_t);
+        if ( !get_nec850_cc_regs(callregs, cc) )
+          break;
         return 1;
       }
 
@@ -408,6 +727,15 @@ ssize_t idaapi nec850_t::on_event(ssize_t msgid, va_list va)
         return -1;
       }
 
+    case processor_t::ev_get_abi_info:
+      {
+        qstrvec_t *names = va_arg(va, qstrvec_t *);
+        qstrvec_t *opts  = va_arg(va, qstrvec_t *);
+        // comp_t comp = va_argi(va, comp_t);
+        nec850_get_abi_info(names, opts);
+      }
+      return 1;
+
     case processor_t::ev_add_cref:  // A code reference is being created.
       {
         ea_t from = va_arg(va, ea_t);
@@ -425,7 +753,7 @@ ssize_t idaapi nec850_t::on_event(ssize_t msgid, va_list va)
       }
 
     case processor_t::ev_get_regfinder:
-      return ssize_t(reg_finder);
+      return reinterpret_cast<ssize_t>(reg_finder);
 
     case processor_t::ev_create_merge_handlers:
       {
@@ -444,9 +772,10 @@ ssize_t idaapi nec850_t::on_event(ssize_t msgid, va_list va)
       {
         static const cvt64_node_tag_t node_info[] =
         {
-          { helper, atag|NETMAP_VAL|NETMAP_VAL_NDX, GP_EA_IDX },
           { helper, atag|NETMAP_VAL|NETMAP_VAL_NDX, CTBP_EA_IDX },
+          { helper, atag|NETMAP_VAL|NETMAP_VAL_NDX, GP_EA_IDX },
           { helper, atag|NETMAP_VAL|NETMAP_VAL_NDX, TP_EA_IDX },
+          { helper, atag|NETMAP_VAL|NETMAP_VAL_NDX, EP_EA_IDX },
         };
         return cvt64_node_supval_for_event(va, node_info, qnumber(node_info));
       }
@@ -494,10 +823,162 @@ ssize_t idaapi nec850_t::on_event(ssize_t msgid, va_list va)
       }
     // END OF DEBUGGER CALLBACKS
 
+    case nec850_module_t::ev_get_gp_register:
+      return get_global_register(g_gp_ea, IDP_GP_CALLEE_SAVED);
+
+    case nec850_module_t::ev_get_gp_ea:
+      {
+        ea_t *gpval = va_arg(va, ea_t *);
+        ea_t ea = va_arg(va, ea_t);
+        *gpval = get_sreg(ea, srGP);
+        return 1;
+      }
+
+    case nec850_module_t::ev_set_gp_register:
+      set_global_register(&g_gp_ea, IDP_GP_CALLEE_SAVED, srGP, va);
+      break;
+
+    case nec850_module_t::ev_get_tp_register:
+      return get_global_register(g_tp_ea, IDP_TP_CALLEE_SAVED);
+
+    case nec850_module_t::ev_get_tp_ea:
+      {
+        ea_t *tpval = va_arg(va, ea_t *);
+        ea_t ea = va_arg(va, ea_t);
+        *tpval = get_sreg(ea, srTP);
+        return 1;
+      }
+
+    case nec850_module_t::ev_set_tp_register:
+      set_global_register(&g_tp_ea, IDP_TP_CALLEE_SAVED, srTP, va);
+      break;
+
+    case nec850_module_t::ev_get_ep_register:
+      return get_global_register(g_ep_ea, IDP_EP_CALLEE_SAVED);
+
+    case nec850_module_t::ev_get_ep_ea:
+      {
+        ea_t *epval = va_arg(va, ea_t *);
+        ea_t ea = va_arg(va, ea_t);
+        *epval = get_sreg(ea, srEP);
+        return 1;
+      }
+
+    case nec850_module_t::ev_set_ep_register:
+      set_global_register(&g_ep_ea, IDP_EP_CALLEE_SAVED, srEP, va);
+      break;
+
+    case nec850_module_t::ev_get_r2_register:
+      {
+        using namespace nec850_module_t;
+        bool callee_saved = (idpflags & IDP_R2_CALLEE_SAVED) != 0;
+        return callee_saved ? CALLEE_SAVED : FREE;
+      }
+
+    case nec850_module_t::ev_set_r2_register:
+      {
+        using namespace nec850_module_t;
+        reg_usage_t usage = va_argi(va, reg_usage_t);
+        setflag(idpflags, IDP_R2_CALLEE_SAVED, usage != FREE);
+        save_all_options();
+      }
+      break;
+
+    case nec850_module_t::ev_restore_pushinfo:
+      {
+        pushinfo_t *pi = va_arg(va, pushinfo_t *);
+        ea_t func_ea = va_arg(va, ea_t);
+        if ( pi->restore_from_idb(*this, func_ea) )
+          return 1;
+      }
+      break;
+
+    case nec850_module_t::ev_save_pushinfo:
+      {
+        ea_t func_ea = va_arg(va, ea_t);
+        const pushinfo_t *pi = va_arg(va, pushinfo_t *);
+        pi->save_to_idb(*this, func_ea);
+        return 1;
+      }
+
+    case nec850_module_t::ev_serialize_pushinfo:
+      {
+        bytevec_t *buf = va_arg(va, bytevec_t *);
+        ea_t func_ea = va_arg(va, ea_t);
+        const pushinfo_t *pi = va_arg(va, pushinfo_t *);
+        // int flags = va_arg(va, int);
+        pi->serialize(buf, func_ea);
+        return 1;
+      }
+
+    case nec850_module_t::ev_deserialize_pushinfo:
+      {
+        pushinfo_t *pi = va_arg(va, pushinfo_t *);
+        memory_deserializer_t *buf = va_arg(va, memory_deserializer_t *);
+        ea_t func_ea = va_arg(va, ea_t);
+        // int flags = va_arg(va, int);
+        if ( pi->deserialize(buf, func_ea) )
+          return 1;
+        break;
+      }
+
+    case nec850_module_t::ev_is_special_func_call:
+      {
+        const insn_t *insn = va_arg(va, const insn_t *);
+        return is_special_func_call(nullptr, nullptr, *insn);
+      }
+
     default:
       break;
   }
   return code;
+}
+
+//-------------------------------------------------------------------------
+void nec850_t::nec850_set_abi(bool init_inf_bits)
+{
+  qstring qbuf;
+  get_abi_name(&qbuf);
+  qstrvec_t opts;
+  qbuf.split(&opts, "-", SSF_DROP_EMPTY);
+
+  bool good_abi = true;
+  if ( opts.empty() )
+    good_abi = false;
+  else if ( opts[0] == "rh850" || opts[0] == "ghs" )
+    abi = ABI_RH850;
+  else if ( opts[0] == "oldgcc" || opts[0] == "gcc" )
+    abi = ABI_OLDGCC;
+  else
+    good_abi = false;
+  if ( !good_abi )
+  {
+    if ( opts.empty() )
+      msg("No ABI name\n");
+    else
+      msg("ABI name '%s' is unknown, ignored\n", opts[0].c_str());
+    // set default ABI
+    set_abi_name(is_rh850() ? "rh850" : "oldgcc");
+    return;
+  }
+  // GHS compiler aligns to 8-byte
+  // doc: "If the second argument requires 8-byte alignment and its offset
+  // would not otherwise be a multiple of eight bytes, the second argument's
+  // offset is increased by four bytes."
+  abi_align8 = opts[0] == "ghs"
+            || opts.size() > 1 && opts[1] == "8byte_align";
+  if ( init_inf_bits )
+  {
+    inf_set_mem_aligned4(!abi_align8);
+    // to guess a prototype in the decompiler
+    // for such an ABI, only scalar types are aligned.
+    // since the decompiler can only guess scalar types in the prototype,
+    // this condition is automatically satisfied.
+    // Old GCC aligns scalars to 8-byte
+    // doc: "Alignment of parameters within the parameter list is the same
+    // as their basic alignment."
+    inf_set_big_arg_align(abi_align8 || abi == ABI_OLDGCC);
+  }
 }
 
 //-----------------------------------------------------------------------
@@ -539,12 +1020,12 @@ const char *const RegNames[rLastRegister] =
   "lp",
 
   // system registers start here
-  "eipc",
-  "eipsw",
-  "fepc",
-  "fepsw",
-  "ecr",
-  "psw",
+  "sr0",
+  "sr1",
+  "sr2",
+  "sr3",
+  "sr4",
+  "sr5",
   "sr6",
   "sr7",
   "sr8",
@@ -559,7 +1040,7 @@ const char *const RegNames[rLastRegister] =
   "sr17",
   "sr18",
   "sr19",
-  "ctbp",
+  "sr20",
   "sr21",
   "sr22",
   "sr23",
@@ -640,7 +1121,7 @@ const char *const RegNames[rLastRegister] =
 
   "EFG", "ECT",
 
-  "cs", "ds", "gp", "tp", "callt",
+  "cs", "ds", "gp", "tp", "callt", "ep",
 };
 CASSERT(qnumber(RegNames) == rLastRegister);
 
@@ -651,13 +1132,18 @@ processor_t LPH =
 {
   IDP_INTERFACE_VERSION,  // version
   PLFM_NEC_V850X,         // id
-    PR_DEFSEG32           // flag
-  | PR_USE32
-  | PR_SEGS
-  | PRN_HEX
-  | PR_RNAMESOK,
+                          // flag
+    PR_USE32              // supports 32-bit addressing
+  | PR_DEFSEG32           // create 32-bit segments by default
+  | PRN_HEX               // values are hexadecimal by default
+  | PR_SEGS               // has segment registers
+  | PR_TYPEINFO           // support the tinfo_t object (type system)
+  | PR_USE_ARG_TYPES      // use ph.use_arg_types callback
+  | PR_RNAMESOK,          // register names can be reused for location names
                           // flag2
-    PR2_IDP_OPTS | PR2_MACRO,         // the module has processor-specific configuration options
+    PR2_IDP_OPTS          // the module has processor-specific configuration options
+  | PR2_MACRO             // processor supports macro instructions
+  | PR2_IGNORE_IDA_GUESS, // allow to create items inside the IDA-guessed data arrays
   8,                      // 8 bits in a byte for code segments
   8,                      // 8 bits in a byte for other segments
 
@@ -672,7 +1158,7 @@ processor_t LPH =
   rLastRegister,          // Number of registers
 
   rVcs,                   // number of first segment register
-  srCTBP,                // number of last segment register
+  srEP,                   // number of last segment register
   0 /*4*/,                // size of a segment register
   rVcs,
   rVds,

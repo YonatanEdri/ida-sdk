@@ -28,4 +28,3 @@ class cfuncptr_t(object):
         :param item: The item to find coordinates for in the pseudocode listing
         """
         pass
-

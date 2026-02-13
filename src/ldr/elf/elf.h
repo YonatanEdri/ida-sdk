@@ -1328,25 +1328,28 @@ private:
 };
 
 //----------------------------------------------------------------------------
-struct elf_v800_t : public hexrays_procdef_t
+struct elf_v850_t : public hexrays_procdef_t
 {
   fixup_type_t ha16_reltype = FIXUP_CUSTOM;
   fixup_type_t get_ha16_reltype();
+  bool rh850;
 
-  elf_v800_t(elf_loader_t &l, reader_t &r);
+  elf_v850_t(elf_loader_t &l, reader_t &r, bool _rh850);
+  virtual const char *calc_procname(
+        uint32 *e_flags,
+        const char *procname) override;
   virtual const char *proc_describe_flag_bit(uint32 *e_flags) override;
+  virtual void proc_on_start_data_loading(elf_ehdr_t &header) override;
+  virtual bool proc_handle_symbol(sym_rel &sym, const char *symname) override;
   virtual const char *proc_handle_reloc(
         const rel_data_t &rel_data,
         const sym_rel *symbol,
         const elf_rela_t *reloc,
         reloc_tools_t *tools) override;
-};
-
-//----------------------------------------------------------------------------
-struct elf_v850_t : public hexrays_procdef_t
-{
-  elf_v850_t(elf_loader_t &l, reader_t &r) : hexrays_procdef_t(l, r) {}
-  virtual const char *calc_procname(uint32 *e_flags, const char *procname) override;
+  virtual bool proc_on_create_section(
+        const elf_shdr_t &sh,
+        const qstring &name,
+        ea_t *sa) override;
 };
 
 //----------------------------------------------------------------------------
@@ -1405,6 +1408,15 @@ struct elf_nds32_t : public hexrays_procdef_t
         const elf_rela_t *reloc,
         reloc_tools_t *tools) override;
   virtual const char *proc_describe_flag_bit(uint32 *e_flags) override;
+  virtual bool proc_perform_patching(
+        const elf_shdr_t *plt,
+        const elf_shdr_t *gotplt) override;
+  virtual bool proc_handle_symbol(sym_rel &sym, const char *symname) override;
+
+  // Check if symbol is an NDS32 mapping symbol ($c for code, $d for data)
+  // These are used by the toolchain to mark code/data boundaries but
+  // should not be used as primary names for addresses
+  static bool is_mapping_symbol(const char *name);
 };
 
 //----------------------------------------------------------------------------
@@ -1432,6 +1444,7 @@ struct elf_riscv_t : public hexrays_procdef_t
         const elf_shdr_t &sh,
         const qstring &name,
         ea_t *sa) override;
+  virtual bool proc_load_unknown_sec(Elf64_Shdr *sh, bool force) override;
 
   void handle_add_sub_reloc(
         uchar type,
@@ -1643,7 +1656,15 @@ struct sym_rel
 
   void swap(sym_rel &r)
   {
-    qswap(*this, r);
+    original_name.swap(r.original_name);
+    name.swap(r.name);
+    qswap(original, r.original);
+    qswap(size, r.size);
+    qswap(value, r.value);
+    qswap(sec, r.sec);
+    qswap(bind, r.bind);
+    qswap(type, r.type);
+    qswap(flags, r.flags);
   }
 
   void set_section_index(const reader_t &reader);
@@ -1712,6 +1733,7 @@ void std_handle_dynsym(const sym_rel &symrel, elf_sym_idx_t, const char *symname
 const char *get_reloc_name(const reader_t &reader, int type);
 
 void parse_attributes(reader_t &reader, uint32 offset, size_t size);
+void parse_riscv_attributes(reader_t &reader, uint32 offset, size_t size);
 int  elf_machine_2_proc_module_id(reader_t &reader);
 
 //--------------------------------------------------------------------------

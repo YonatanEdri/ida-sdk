@@ -1,4 +1,3 @@
-
 //<code(py_hexrays_hooks)>
 //---------------------------------------------------------------------------
 ssize_t idaapi Hexrays_Callback(void *ud, hexrays_event_t code, va_list va)

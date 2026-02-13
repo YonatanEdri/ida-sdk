@@ -1,13 +1,8 @@
 /*!
  *      Hex-Rays Decompiler project
- *      Copyright (c) 1990-2025 Hex-Rays
+ *      Copyright (c) 1990-2026 Hex-Rays
  *      ALL RIGHTS RESERVED.
- */
-
-#ifndef __HEXRAYS_HPP
-#define __HEXRAYS_HPP
-
-/*!
+ *
  *  \file hexrays.hpp
  *  \brief There are 2 representations of the binary code in the decompiler:
  *
@@ -89,8 +84,13 @@
  *      See also the description of \ref vmpage.
  */
 
+#pragma once
+#define __HEXRAYS_HPP
+
 #include <pro.h>
 #include <fpro.h>
+#include <qset.hpp>
+#include <qmap.hpp>
 #include <ida.hpp>
 #include <idp.hpp>
 #include <gdl.hpp>
@@ -98,9 +98,6 @@
 #include <loader.hpp>
 #include <kernwin.hpp>
 #include <typeinf.hpp>
-#include <deque>
-#include <queue>
-
 /*!
  * \page vmpage Virtual Machine used by Microcode
  *      We can imagine a virtual micro machine that executes microcode.
@@ -258,11 +255,10 @@ class mbl_graph_t;      // control flow graph of microcode
 class control_graph_t;  // the result of structural analysis
 class edge_mapper_t;
 struct vdui_t;          // widget representing the pseudocode window
-struct hexrays_failure_t; // decompilation failure object, is thrown by exceptions
 struct mba_stats_t;     // statistics about decompilation of a function
 struct mlist_t;         // list of memory and register locations
 struct voff_t;          // value offset (microregister number or stack offset)
-typedef std::set<voff_t> voff_set_t;
+typedef qset<voff_t> voff_set_t;
 struct vivl_t;          // value interval (register or stack range)
 typedef int mreg_t;     ///< Micro register
 
@@ -279,8 +275,8 @@ struct ctry_t;          // C++ try-statement
 struct cthrow_t;        // C++ throw-statement
 
 typedef std::set<ea_t> easet_t;
-typedef std::set<minsn_t *> minsn_ptr_set_t;
-typedef std::set<qstring> strings_t;
+typedef qset<minsn_t *> minsn_ptr_set_t;
+typedef qset<qstring> strings_t;
 typedef qvector<minsn_t*> minsnptrs_t;
 typedef qvector<mop_t*> mopptrs_t;
 typedef qvector<mop_t> mopvec_t;
@@ -562,6 +558,45 @@ enum merror_t
 ea_t hexapi get_merror_desc(qstring *out, merror_t code, mba_t *mba);
 
 //-------------------------------------------------------------------------
+/// Exception object: decompiler failure information
+struct hexrays_failure_t
+{
+  merror_t code = MERR_OK;      ///< \ref MERR_
+  ea_t errea = BADADDR;         ///< associated address
+  qstring str;                  ///< string information
+  hexrays_failure_t() {}
+  hexrays_failure_t(merror_t c, ea_t ea, const char *buf=nullptr) : code(c), errea(ea), str(buf) {}
+  hexrays_failure_t(merror_t c, ea_t ea, const qstring &buf) : code(c), errea(ea), str(buf) {}
+  qstring hexapi desc() const;
+  HEXRAYS_MEMORY_ALLOCATION_FUNCS()
+};
+
+/// Exception object: decompiler exception
+struct vd_failure_t : public std::exception
+{
+  hexrays_failure_t hf;
+  vd_failure_t() {}
+  vd_failure_t(merror_t code, ea_t ea, const char *buf=nullptr) : hf(code, ea, buf) {}
+  vd_failure_t(merror_t code, ea_t ea, const qstring &buf) : hf(code, ea, buf) {}
+  vd_failure_t(const hexrays_failure_t &_hf) : hf(_hf) {}
+  qstring desc() const { return hf.desc(); }
+#ifndef SWIG
+  virtual const char *what() const noexcept override { return "decompilation failure"; }
+#endif
+#ifdef __GNUC__
+  ~vd_failure_t() throw() {}
+#endif
+  HEXRAYS_MEMORY_ALLOCATION_FUNCS()
+};
+
+/// Exception object: decompiler internal error
+struct vd_interr_t : public vd_failure_t
+{
+  vd_interr_t(ea_t ea, const qstring &buf) : vd_failure_t(MERR_INTERR, ea, buf) {}
+  vd_interr_t(ea_t ea, const char *buf) : vd_failure_t(MERR_INTERR, ea, buf) {}
+};
+
+//-------------------------------------------------------------------------
 // List of microinstruction opcodes.
 // The order of setX and jX insns is important, it is used in the code.
 
@@ -810,7 +845,7 @@ public:
 /// This structure holds information about a number format.
 struct number_format_t
 {
-  flags_t flags32 = 0;    ///< low 32bit of flags (for compatibility)
+  flags_t flags32 = 0;    ///< low 32-bit of flags (for compatibility)
   char opnum;             ///< operand number: 0..UA_MAXOP
   char props = 0;         ///< properties: combination of NF_ bits (\ref NF_)
 /// \defgroup NF_ Number format property bits
@@ -872,7 +907,7 @@ struct number_format_t
 };
 
 // Number formats are attached to (ea,opnum) pairs
-typedef std::map<operand_locator_t, number_format_t> user_numforms_t;
+typedef qmap<operand_locator_t, number_format_t> user_numforms_t;
 
 //-------------------------------------------------------------------------
 /// Base helper class to convert binary data structures into text.
@@ -1013,7 +1048,9 @@ tinfo_t hexapi get_int_type_by_width_and_sign(int srcwidth, type_sign_t sign);
 
 /// Create a partial type info by width.
 /// Returns a partially defined type (examples: _DWORD, _BYTE) with the given width.
-/// \param size size of the type in bytes
+/// \param size size of the type in bytes. Must be a power of 2 (1, 2, 4, 8, 16).
+///             For non-power-of-2 sizes, returns an empty tinfo_t.
+///             Use make_valid_size() to round up arbitrary sizes before calling.
 
 tinfo_t hexapi get_unk_type(int size);
 
@@ -1177,6 +1214,8 @@ struct lvar_locator_t
   // Debugging: get textual representation of a lvar locator.
   const char *hexapi dstr() const;
 };
+DECLARE_TYPE_AS_MOVABLE(lvar_locator_t);
+typedef qvector<lvar_locator_t> lvar_locators;
 
 /// Definition of a local variable (register or stack) #var #lvar
 class lvar_t : public lvar_locator_t
@@ -1219,6 +1258,7 @@ class lvar_t : public lvar_locator_t
 #define CVAR_SHARED  0x02000000 ///< variable is mapped to several chains
 #define CVAR_SCARG   0x04000000 ///< variable is a stack argument that was
                                 ///< transformed from a scattered one
+#define CVAR_NOPROP  0x08000000 ///< forbidden to propagate the variable
 ///@}
 
 public:
@@ -1253,7 +1293,7 @@ public:
   /// Has any user-defined information?
   bool has_user_info() const
   {
-    return (flags & (CVAR_UNAME|CVAR_UTYPE|CVAR_NOPTR|CVAR_UNUSED)) != 0
+    return (flags & (CVAR_UNAME|CVAR_UTYPE|CVAR_NOPTR|CVAR_UNUSED|CVAR_NOPROP)) != 0
         || !cmt.empty();
   }
   /// Has user-defined name?
@@ -1302,6 +1342,8 @@ public:
   bool is_shared() const { return (flags & CVAR_SHARED) != 0; }
   /// Was lvar transformed from a scattered argument?
   bool was_scattered_arg() const { return (flags & CVAR_SCARG) != 0; }
+  /// Is it forbidden to propagate the variable?
+  bool is_noprop() const { return (flags & CVAR_NOPROP) != 0; }
   void set_used() { flags |= CVAR_USED; }
   void clear_used() { flags &= ~CVAR_USED; }
   void set_typed() { flags |= CVAR_TYPE; clr_noptr_var(); }
@@ -1349,6 +1391,8 @@ public:
   void clr_shared() { flags &= ~CVAR_SHARED; }
   void set_scattered_arg() { flags |= CVAR_SCARG; }
   void clr_scattered_arg() { flags &= ~CVAR_SCARG; }
+  void set_noprop() { flags |= CVAR_NOPROP; }
+  void clr_noprop() { flags &= ~CVAR_NOPROP; }
 
   /// Do variables overlap?
   bool has_common(const lvar_t &v) const
@@ -1416,8 +1460,9 @@ public:
 DECLARE_TYPE_AS_MOVABLE(lvar_t);
 
 /// Vector of local variables
-struct lvars_t : public qvector<lvar_t>
+class lvars_t : public qvector<lvar_t>
 {
+public:
   /// Find an input variable at the specified location.
   /// \param argloc variable location
   /// \param _size variable size in bytes
@@ -1466,7 +1511,7 @@ struct lvar_saved_info_t
   tinfo_t type;                 ///< Type
   qstring cmt;                  ///< Comment
   ssize_t size = BADSIZE;       ///< Type size (if not initialized then -1)
-  int flags = 0;                ///< \ref LVINF_
+  uint32 flags = 0;             ///< \ref LVINF_
 /// \defgroup LVINF_ saved user lvar info property bits
 /// Used in lvar_saved_info_t::flags
 ///@{
@@ -1482,6 +1527,7 @@ struct lvar_saved_info_t
 #define LVINF_NOPTR  0x0004     ///< variable type should not be a pointer
 #define LVINF_NOMAP  0x0008     ///< forbid automatic mapping of the variable
 #define LVINF_UNUSED 0x0010     ///< unused argument, corresponds to CVAR_UNUSED
+#define LVINF_NOPROP 0x0020     ///< don't propagate assignments to this lvar (CVAR_NOPROP)
 ///@}
   bool has_info() const
   {
@@ -1490,7 +1536,8 @@ struct lvar_saved_info_t
         || !cmt.empty()
         || is_split_lvar()
         || is_noptr_lvar()
-        || is_nomap_lvar();
+        || is_nomap_lvar()
+        || is_noprop_lvar();
   }
   bool operator==(const lvar_saved_info_t &r) const
   {
@@ -1515,12 +1562,15 @@ struct lvar_saved_info_t
   bool is_unused_lvar() const { return (flags & LVINF_UNUSED) != 0; }
   void set_unused_lvar() { flags |= LVINF_UNUSED; }
   void clr_unused_lvar() { flags &= ~LVINF_UNUSED; }
+  bool is_noprop_lvar() const { return (flags & LVINF_NOPROP) != 0; }
+  void set_noprop_lvar() { flags |= LVINF_NOPROP; }
+  void clr_noprop_lvar() { flags &= ~LVINF_NOPROP; }
 };
 DECLARE_TYPE_AS_MOVABLE(lvar_saved_info_t);
 typedef qvector<lvar_saved_info_t> lvar_saved_infos_t;
 
 /// Local variable mapping (is used to merge variables)
-typedef std::map<lvar_locator_t, lvar_locator_t> lvar_mapping_t;
+typedef qmap<lvar_locator_t, lvar_locator_t> lvar_mapping_t;
 
 /// All user-defined information about local variables
 struct lvar_uservec_t
@@ -1690,8 +1740,8 @@ struct udcall_t
   bool empty() const { return name.empty() && tif.empty(); }
 };
 
-// All user-defined function calls (map address -> udcall)
-typedef std::map<ea_t, udcall_t> udcall_map_t;
+// All user-defined function calls
+typedef qmap<ea_t, udcall_t> udcall_map_t;
 
 /// Restore user defined function calls from the database.
 /// \param udcalls ptr to output buffer
@@ -1871,38 +1921,24 @@ DECLARE_TYPE_AS_MOVABLE(node_bitset_t);
 class array_of_node_bitset_t : public qvector<node_bitset_t> {};
 
 //-------------------------------------------------------------------------
-template <class T>
-struct ivl_tpl  // an interval
+struct ivl_t // an interval
 {
-  ivl_tpl() = delete;
 public:
-  T off;
-  T size;
-  ivl_tpl(T _off, T _size) : off(_off), size(_size) {}
-  bool valid() const { return last() >= off; }
-  T end() const { return off + size; }
-  T last() const { return off + size - 1; }
+  uint64 off;
+  uint64 size;
 
-  DEFINE_MEMORY_ALLOCATION_FUNCS()
-};
-
-//-------------------------------------------------------------------------
-typedef ivl_tpl<uval_t> uval_ivl_t;
-struct ivl_t : public uval_ivl_t
-{
-private:
-  typedef ivl_tpl<uval_t> inherited;
-
-public:
-  ivl_t(uval_t _off=0, uval_t _size=0) : inherited(_off,_size) {}
+  ivl_t(uint64 _off=0, uint64 _size=0) : off(_off), size(_size) {}
   bool empty() const { return size == 0; }
+  bool valid() const { return last() >= off; }
+  uint64 end() const { return off + size; }
+  uint64 last() const { return off + size - 1; }
   void clear() { size = 0; }
   void print(qstring *vout) const;
   const char *hexapi dstr() const;
 
   bool extend_to_cover(const ivl_t &r) // extend interval to cover 'r'
   {
-    uval_t new_end = end();
+    uint64 new_end = end();
     bool changed = false;
     if ( off > r.off )
     {
@@ -1920,8 +1956,8 @@ public:
   }
   void intersect(const ivl_t &r)
   {
-    uval_t new_off = qmax(off, r.off);
-    uval_t new_end = end();
+    uint64 new_off = qmax(off, r.off);
+    uint64 new_end = end();
     if ( new_end > r.end() )
       new_end = r.end();
     if ( new_off < new_end )
@@ -1946,12 +1982,13 @@ public:
     return interval::includes(off, size, ivl.off, ivl.size);
   }
   // does *this contain off2?
-  bool contains(uval_t off2) const
+  bool contains(uint64 off2) const
   {
     return interval::contains(off, size, off2);
   }
 
   DECLARE_COMPARISONS(ivl_t);
+  DEFINE_MEMORY_ALLOCATION_FUNCS()
   static const ivl_t allmem;
 #define ALLMEM ivl_t::allmem
 };
@@ -1968,58 +2005,45 @@ struct ivl_with_name_t
 };
 
 //-------------------------------------------------------------------------
-template <class Ivl, class T>
-class ivlset_tpl // set of intervals
+struct ivlset_visitor_t
+{
+  virtual int visit_ivl(const ivl_t &ivl) = 0;
+};
+
+//-------------------------------------------------------------------------
+/// Set of intervals.
+/// Bit arrays are efficient only for small sets. Potentially huge
+/// sets, like memory ranges, require another representation.
+/// ivlset_t is used for a list of memory locations in our decompiler.
+class ivlset_t
 {
 public:
-  typedef qvector<Ivl> bag_t;
+  typedef qvector<ivl_t> bag_t;
 
 protected:
   bag_t bag;
   bool verify() const;
   // we do not store the empty intervals in bag so size == 0 denotes
-  // MAX_VALUE<T>+1, e.g. 0x100000000 for uint32
-  static bool ivl_all_values(const Ivl &ivl) { return ivl.off == 0 && ivl.size == 0; }
+  // MAX_VALUE<uint64>+1, e.g. 0x1'00000000'00000000
+  static bool ivl_all_values(const ivl_t &ivl) { return ivl.off == 0 && ivl.size == 0; }
 
 public:
-  ivlset_tpl() {}
-  ivlset_tpl(const Ivl &ivl) { if ( ivl.valid() ) bag.push_back(ivl); }
+  ivlset_t() {}
+  ivlset_t(const ivl_t &ivl) { if ( ivl.valid() ) bag.push_back(ivl); }
   DEFINE_MEMORY_ALLOCATION_FUNCS()
 
-  void swap(ivlset_tpl &r) { bag.swap(r.bag); }
-  const Ivl &getivl(int idx) const { return bag[idx]; }
-  const Ivl &lastivl() const { return bag.back(); }
+  void swap(ivlset_t &r) { bag.swap(r.bag); }
+  const ivl_t &getivl(int idx) const { return bag[idx]; }
+  const ivl_t &lastivl() const { return bag.back(); }
   size_t nivls() const { return bag.size(); }
   bool empty() const { return bag.empty(); }
   void clear() { bag.clear(); }
   void qclear() { bag.qclear(); }
   bool all_values() const { return nivls() == 1 && ivl_all_values(bag[0]); }
-  void set_all_values() { clear(); bag.push_back(Ivl(0, 0)); }
+  void set_all_values() { clear(); bag.push_back(ivl_t(0, 0)); }
   bool single_value() const { return nivls() == 1 && bag[0].size == 1; }
-  bool single_value(T v) const { return single_value() && bag[0].off == v; }
+  bool single_value(uint64 v) const { return single_value() && bag[0].off == v; }
 
-  bool operator==(const Ivl &v) const { return nivls() == 1 && bag[0] == v; }
-  bool operator!=(const Ivl &v) const { return !(*this == v); }
-
-  typedef typename bag_t::iterator iterator;
-  typedef typename bag_t::const_iterator const_iterator;
-  const_iterator begin() const { return bag.begin(); }
-  const_iterator end()   const { return bag.end(); }
-  iterator begin() { return bag.begin(); }
-  iterator end()   { return bag.end(); }
-};
-
-//-------------------------------------------------------------------------
-/// Set of address intervals.
-/// Bit arrays are efficient only for small sets. Potentially huge
-/// sets, like memory ranges, require another representation.
-/// ivlset_t is used for a list of memory locations in our decompiler.
-typedef ivlset_tpl<ivl_t, uval_t> uval_ivl_ivlset_t;
-struct ivlset_t : public uval_ivl_ivlset_t
-{
-  typedef ivlset_tpl<ivl_t, uval_t> inherited;
-  ivlset_t() {}
-  ivlset_t(const ivl_t &ivl) : inherited(ivl) {}
   bool hexapi add(const ivl_t &ivl);
   bool add(ea_t ea, asize_t size) { return add(ivl_t(ea, size)); }
   bool hexapi add(const ivlset_t &ivs);
@@ -2027,23 +2051,36 @@ struct ivlset_t : public uval_ivl_ivlset_t
   bool hexapi sub(const ivl_t &ivl);
   bool sub(ea_t ea, asize_t size) { return sub(ivl_t(ea, size)); }
   bool hexapi sub(const ivlset_t &ivs);
-  bool hexapi has_common(const ivl_t &ivl, bool strict=false) const;
-  void hexapi print(qstring *vout) const;
-  const char *hexapi dstr() const;
-  asize_t hexapi count() const;
+  asize_t hexapi count() const; // sum of the interval sizes
   bool hexapi has_common(const ivlset_t &ivs) const;
-  bool hexapi contains(uval_t off) const;
+  bool hexapi has_common(const ivl_t &ivl, bool strict=false) const;
+  bool hexapi contains(uint64 off) const;
   bool hexapi includes(const ivlset_t &ivs) const;
   bool hexapi intersect(const ivlset_t &ivs);
-
+  bool is_subset_of(const ivlset_t &ivs) const { return ivs.includes(*this); }
   DECLARE_COMPARISONS(ivlset_t);
+  bool operator==(const ivl_t &v) const { return nivls() == 1 && bag[0] == v; }
+  bool operator!=(const ivl_t &v) const { return !(*this == v); }
+
+  typedef typename bag_t::iterator iterator;
+  typedef typename bag_t::const_iterator const_iterator;
+  const_iterator begin() const { return bag.begin(); }
+  const_iterator end()   const { return bag.end(); }
+  iterator begin() { return bag.begin(); }
+  iterator end()   { return bag.end(); }
+
+  void hexapi print(qstring *vout) const;
+  const char *hexapi dstr() const;
 
 };
 DECLARE_TYPE_AS_MOVABLE(ivlset_t);
+
 typedef qvector<ivlset_t> array_of_ivlsets;
 //-------------------------------------------------------------------------
 // We use bitset_t to keep list of registers.
 // This is the most optimal storage for them.
+// Note: the inherited count(mreg_t) method returns the number of consecutive
+// bits set starting from mreg_t, which may be any value (not just powers of 2).
 class rlist_t : public bitset_t
 {
 public:
@@ -2934,7 +2971,7 @@ public:
   bool operator!=(const mop_t &rop) const { return !equal_mops(rop, 0); }
 
   /// Lexographical operand comparison.
-  /// It can be used to store mop_t in various containers, like std::set
+  /// It can be used to store mop_t in various containers, like qset
   bool operator <(const mop_t &rop) const { return lexcompare(rop) < 0; }
   friend int lexcompare(const mop_t &a, const mop_t &b) { return a.lexcompare(b); }
   int hexapi lexcompare(const mop_t &rop) const;
@@ -3276,9 +3313,12 @@ public:
   argloc_t return_argloc;       ///< location of the returned value
 
   mlist_t return_regs;          ///< list of values returned by the function
-  mlist_t spoiled;              ///< list of spoiled locations (includes return_regs)
-  mlist_t pass_regs;            ///< passthrough registers: registers that depend on input
-                                ///< values (subset of spoiled)
+  mlist_t spoiled;              ///< list of spoiled locations (includes RETURN_REGS)
+  mlist_t pass_regs;            ///< passthrough registers (subset of SPOILED)
+                                ///< The called function only partially updates the
+                                ///< register, preserving the previous values in other
+                                ///< parts. For example, the bit set operation like PC's
+                                ///< _bittestandset().
   ivlset_t visible_memory;      ///< what memory is visible to the call?
   mlist_t dead_regs;            ///< registers defined by the function but never used.
                                 ///< upon propagation we do the following:
@@ -3496,28 +3536,17 @@ public:
 };
 
 //-------------------------------------------------------------------------
-#if defined(__NT__)
-#  ifdef _DEBUG
-#    define SIZEOF_BLOCK_CHAINS  32
-#else
-#    define SIZEOF_BLOCK_CHAINS  24
-#  endif
-#elif defined(__MAC__)
-#  define SIZEOF_BLOCK_CHAINS  32
-#else
-#  define SIZEOF_BLOCK_CHAINS  56
-#endif
-
 /// Chains of one block.
-/// Please note that this class is based on std::set and it must be accessed
-/// using the block_chains_begin(), block_chains_find() and similar functions.
-/// This is required because different compilers use different implementations
-/// of std::set. However, since the size of std::set depends on the compilation
-/// options, we replace it with a byte array.
-class block_chains_t
+class block_chains_t : public qset<chain_t>
 {
-  size_t body[SIZEOF_BLOCK_CHAINS/sizeof(size_t)]; // opaque std::set, uncopyable
+  int serial = -1;   ///< block number
 public:
+  using base_t = qset<chain_t>;
+  using typename base_t::iterator;
+  using typename base_t::const_iterator;
+  using typename base_t::reverse_iterator;
+  using typename base_t::const_reverse_iterator;
+
   /// Get chain for the specified register
   /// \param reg   register number
   /// \param width size of register in bytes
@@ -3801,7 +3830,7 @@ public:
   //@}
 
   /// Lexographical comparison
-  /// It can be used to store minsn_t in various containers, like std::set
+  /// It can be used to store minsn_t in various containers, like qset
   bool operator <(const minsn_t &ri) const { return lexcompare(ri) < 0; }
   int hexapi lexcompare(const minsn_t &ri) const;
 
@@ -4144,18 +4173,35 @@ class int64_emulator_t
 public:
   virtual ~int64_emulator_t() {}
 
-  // Retreive the value assigned to an operand.
+  // Retrieve the value assigned to an operand.
   // This function is called for mop_r, mop_S, mop_v, mop_l
   virtual intval64_t get_mop_value(const mop_t &mop) = 0;
 
   // Calculate the operand value.
   // For register/stack/memory/lvar operands get_mop_value() will be called.
-  intval64_t hexapi mop_value(const mop_t &mop);
+  bool hexapi _mop_value(intval64_t *out, const mop_t &mop, vd_failure_t *vf=nullptr);
+  intval64_t mop_value(const mop_t &mop)
+  {
+    intval64_t v;
+    vd_failure_t vf;
+    if ( !_mop_value(&v, mop, &vf) )
+      throw vf;
+    return v;
+  }
+
 
   // Calculate the result of applying the instruction opcode to its source
   // operands. This function does not store the result to the destination operand.
   // For example: "add r0, #2, ..." will return 3 if r0 contains 1.
-  intval64_t hexapi minsn_value(const minsn_t &insn);
+  bool hexapi _minsn_value(intval64_t *out, const minsn_t &insn, vd_failure_t *vf=nullptr);
+  intval64_t minsn_value(const minsn_t &insn)
+  {
+    intval64_t v;
+    vd_failure_t vf;
+    if ( !_minsn_value(&v, insn, &vf) )
+      throw vf;
+    return v;
+  }
 };
 
 //-------------------------------------------------------------------------
@@ -4289,6 +4335,11 @@ public:
     vdump_block(title, va);
     va_end(va);
   }
+
+  /// Verify an instruction.
+  /// This function will generate an internal error if something is wrong
+  /// with the instruction.
+  void hexapi verify_insn(const minsn_t *m) const;
 
   //-----------------------------------------------------------------------
   // Functions to insert/remove insns during the microcode optimization phase.
@@ -4686,6 +4737,7 @@ enum warnid_t
   WARN_OPT_USELESS_JCND,  ///< 54 simplified comparisons for '%s': %s became %s
   WARN_SUBFRAME_OVERFLOW, ///< 55 call arguments overflow the function chunk frame
   WARN_OPT_VALRNG4,   ///< 56 the cases %s were optimized away because %s
+  WARN_FRAME_ACCESS,  ///< 57 illegal frame access
   WARN_MAX,           ///< may be used in notes as a placeholder when the
                       ///< warning id is not available
 };
@@ -4890,12 +4942,13 @@ public:
 #define MBA_INSGDL   0x01000000 ///< display instruction in graphs
 #define MBA_NICE     0x02000000 ///< apply transformations to c code
 #define MBA_REFINE   0x04000000 ///< may refine return value size
-#define MBA_WINGR32  0x10000000 ///< use wingraph32
+#define MBA_WINGR32  0x10000000 ///< use wingraph32 (deprecated, see hexrays_config_t::use_external_graph)
 #define MBA_NUMADDR  0x20000000 ///< display definition addresses for numbers
 #define MBA_VALNUM   0x40000000 ///< display value numbers
+#define MBA_SHOWEA   0x80000000 ///< display EA in line prefix
 
 #define MBA_INITIAL_FLAGS  (MBA_INSGDL|MBA_NICE|MBA_CMBBLK|MBA_REFINE\
-        |MBA_PRCDEFS|MBA_WINGR32|MBA_VALNUM)
+        |MBA_PRCDEFS|MBA_VALNUM)
 
 #define MBA2_LVARNAMES_OK  0x00000001 ///< may verify lvar_names?
 #define MBA2_LVARS_RENAMED 0x00000002 ///< accept empty names now?
@@ -4932,9 +4985,9 @@ public:
   bool should_beautify()const { return (flags & MBA_NICE  ) != 0; }
   bool rtype_refined()  const { return (flags & MBA_RETREF) != 0; }
   bool may_refine_rettype() const { return (flags & MBA_REFINE) != 0; }
-  bool use_wingraph32() const { return (flags & MBA_WINGR32) != 0; }
   bool display_numaddrs() const { return (flags & MBA_NUMADDR) != 0; }
   bool display_valnums() const { return (flags & MBA_VALNUM) != 0; }
+  bool display_ea()     const { return (flags & MBA_SHOWEA) != 0; }
   bool is_pattern()     const { return (flags & MBA_PATTERN) != 0; }
   bool is_thunk()       const { return (flags & MBA_THUNK) != 0; }
   bool saverest_done()  const { return (flags & MBA_SAVRST) != 0; }
@@ -5388,7 +5441,7 @@ public:
   ivl_t get_stack_region() const; // get entire stack region
 
   /// Serialize mbl array into a sequence of bytes.
-  void hexapi serialize(bytevec_t &vout) const;
+  void hexapi serialize(bytevec_t *vout) const;
 
   /// Deserialize a byte sequence into mbl array.
   /// \param bytes pointer to the beginning of the byte sequence.
@@ -5683,7 +5736,8 @@ public:
   /// Emit one microinstruction.
   /// This variant accepts pointers to operands. It is more difficult to use
   /// but permits to create virtually any instruction. Operands may be nullptr
-  /// when it makes sense.
+  /// when it makes sense. The ownership of the operands is not transferred
+  /// to the decompiler, so it is ok to destroy them after this call.
   minsn_t *hexapi emit(mcode_t code, const mop_t *l, const mop_t *r, const mop_t *d);
 
 };
@@ -5847,44 +5901,6 @@ vdui_t *hexapi get_widget_vdui(TWidget *f);
 
 bool hexapi decompile_many(const char *outfile, const eavec_t *funcaddrs, int flags);
 
-
-/// Exception object: decompiler failure information
-struct hexrays_failure_t
-{
-  merror_t code = MERR_OK;      ///< \ref MERR_
-  ea_t errea = BADADDR;         ///< associated address
-  qstring str;                  ///< string information
-  hexrays_failure_t() {}
-  hexrays_failure_t(merror_t c, ea_t ea, const char *buf=nullptr) : code(c), errea(ea), str(buf) {}
-  hexrays_failure_t(merror_t c, ea_t ea, const qstring &buf) : code(c), errea(ea), str(buf) {}
-  qstring hexapi desc() const;
-  HEXRAYS_MEMORY_ALLOCATION_FUNCS()
-};
-
-/// Exception object: decompiler exception
-struct vd_failure_t : public std::exception
-{
-  hexrays_failure_t hf;
-  vd_failure_t() {}
-  vd_failure_t(merror_t code, ea_t ea, const char *buf=nullptr) : hf(code, ea, buf) {}
-  vd_failure_t(merror_t code, ea_t ea, const qstring &buf) : hf(code, ea, buf) {}
-  vd_failure_t(const hexrays_failure_t &_hf) : hf(_hf) {}
-  qstring desc() const { return hf.desc(); }
-#ifndef SWIG
-  virtual const char *what() const noexcept override { return "decompilation failure"; }
-#endif
-#ifdef __GNUC__
-  ~vd_failure_t() throw() {}
-#endif
-  HEXRAYS_MEMORY_ALLOCATION_FUNCS()
-};
-
-/// Exception object: decompiler internal error
-struct vd_interr_t : public vd_failure_t
-{
-  vd_interr_t(ea_t ea, const qstring &buf) : vd_failure_t(MERR_INTERR, ea, buf) {}
-  vd_interr_t(ea_t ea, const char *buf) : vd_failure_t(MERR_INTERR, ea, buf) {}
-};
 
 /// Send the database to Hex-Rays.
 /// This function sends the current database to the Hex-Rays server.
@@ -6289,7 +6305,7 @@ struct citem_cmt_t : public qstring
 };
 
 // Comments are attached to tree locations:
-typedef std::map<treeloc_t, citem_cmt_t> user_cmts_t;
+typedef qmap<treeloc_t, citem_cmt_t> user_cmts_t;
 
 /// Generic ctree item locator. It can be used for instructions and some expression
 /// types. However, we need more precise locators for other items (e.g. for numbers)
@@ -6306,13 +6322,13 @@ public:
 };
 
 // citem_t::iflags are attached to (ea,op) pairs
-typedef std::map<citem_locator_t, int32> user_iflags_t;
+typedef qmap<citem_locator_t, int32> user_iflags_t;
 
 // union field selections
 // they are represented as a vector of integers. each integer represents the
 // number of union field (0 means the first union field, etc)
 // the size of this vector is equal to the number of nested unions in the selection.
-typedef std::map<ea_t, intvec_t> user_unions_t;
+typedef qmap<ea_t, intvec_t> user_unions_t;
 
 //--------------------------------------------------------------------------
 struct bit_bound_t
@@ -7269,7 +7285,7 @@ enum allow_unused_labels_t
   ALLOW_UNUSED_LABELS = 1,      ///< Unused labels are permitted
 };
 
-typedef std::map<int, qstring> user_labels_t;
+typedef qmap<int, qstring> user_labels_t;
 
 /// Logically negate the specified expression.
 /// The specified expression will be logically negated.
@@ -7450,9 +7466,9 @@ user_iflags_t *hexapi restore_user_iflags(ea_t func_ea);
 user_unions_t *hexapi restore_user_unions(ea_t func_ea);
 
 
-typedef std::map<ea_t, cinsnptrvec_t> eamap_t;
+typedef qmap<ea_t, cinsnptrvec_t> eamap_t;
 // map of instruction boundaries. may contain INS_EPILOG for the epilog instructions
-typedef std::map<cinsn_t *, rangeset_t> boundaries_t;
+typedef qmap<cinsn_t *, rangeset_t> boundaries_t;
 #define INS_EPILOG ((cinsn_t *)1)
 
 // Tags to find this location quickly: #cfunc_t #func_t
@@ -7647,6 +7663,19 @@ public:
   bool hexapi gather_derefs(const ctree_item_t &ci, udt_type_data_t *udm=nullptr) const;
   bool hexapi find_item_coords(const citem_t *item, int *px, int *py);
   bool locked() const { return (statebits & CFS_LOCKED) != 0; }
+  /// Serialize cfunc into a sequence of bytes.
+  bool hexapi serialize(bytevec_t *vout);
+
+  /// Deserialize a byte sequence into cfunc_t
+  /// \param mba the matching mba object
+  /// \param bytes pointer to the beginning of the byte sequence.
+  /// \param nbytes number of bytes in the byte sequence.
+  /// \return new cfunc_t object
+  WARN_UNUSED_RESULT static cfunc_t *hexapi deserialize(
+        mba_t *mba,
+        const uchar *bytes,
+        size_t nbytes);
+
 private:
   /// Cleanup.
   /// Properly delete all children and free memory.
@@ -8326,6 +8355,11 @@ struct vdui_t
   /// \return false if failed or cancelled
   /// \param v pointer to local variable
   bool hexapi ui_unmap_lvar(lvar_t *v);
+
+  /// Forbid variable propagation.
+  /// \return false if failed or cancelled
+  /// \param v pointer to local variable
+  bool hexapi ui_noprop_lvar(lvar_t *v);
 
   /// Map a local variable to another.
   /// This function permanently maps one lvar to another.
@@ -9133,8 +9167,14 @@ enum hexcall_t
   hx_mba_t_split_block,
   hx_mba_t_remove_blocks,
   hx_cfunc_t_recalc_item_addresses,
-  hx_int64_emulator_t_mop_value,
-  hx_int64_emulator_t_minsn_value,
+  hx_obsolete_int64_emulator_t_mop_value,
+  hx_obsolete_int64_emulator_t_minsn_value,
+  hx_int64_emulator_t__mop_value,
+  hx_int64_emulator_t__minsn_value,
+  hx_cfunc_t_serialize,
+  hx_cfunc_t_deserialize,
+  hx_mblock_t_verify_insn,
+  hx_vdui_t_ui_noprop_lvar,
 };
 
 typedef size_t iterator_word;
@@ -10351,6 +10391,14 @@ inline ea_t get_merror_desc(qstring *out, merror_t code, mba_t *mba)
 }
 
 //--------------------------------------------------------------------------
+inline qstring hexrays_failure_t::desc() const
+{
+  qstring retval;
+  HEXDSP(hx_hexrays_failure_t_desc, &retval, this);
+  return retval;
+}
+
+//--------------------------------------------------------------------------
 inline THREAD_SAFE bool must_mcode_close_block(mcode_t mcode, bool including_calls)
 {
   return (uchar)(size_t)HEXDSP(hx_must_mcode_close_block, mcode, including_calls) != 0;
@@ -10892,24 +10940,6 @@ inline bool ivlset_t::sub(const ivlset_t &ivs)
 }
 
 //--------------------------------------------------------------------------
-inline bool ivlset_t::has_common(const ivl_t &ivl, bool strict) const
-{
-  return (uchar)(size_t)HEXDSP(hx_ivlset_t_has_common, this, &ivl, strict) != 0;
-}
-
-//--------------------------------------------------------------------------
-inline void ivlset_t::print(qstring *vout) const
-{
-  HEXDSP(hx_ivlset_t_print, this, vout);
-}
-
-//--------------------------------------------------------------------------
-inline const char *ivlset_t::dstr() const
-{
-  return (const char *)HEXDSP(hx_ivlset_t_dstr, this);
-}
-
-//--------------------------------------------------------------------------
 inline asize_t ivlset_t::count() const
 {
   asize_t retval;
@@ -10920,11 +10950,17 @@ inline asize_t ivlset_t::count() const
 //--------------------------------------------------------------------------
 inline bool ivlset_t::has_common(const ivlset_t &ivs) const
 {
-  return (uchar)(size_t)HEXDSP(hx_ivlset_t_has_common_, this, &ivs) != 0;
+  return (uchar)(size_t)HEXDSP(hx_ivlset_t_has_common, this, &ivs) != 0;
 }
 
 //--------------------------------------------------------------------------
-inline bool ivlset_t::contains(uval_t off) const
+inline bool ivlset_t::has_common(const ivl_t &ivl, bool strict) const
+{
+  return (uchar)(size_t)HEXDSP(hx_ivlset_t_has_common_, this, &ivl, strict) != 0;
+}
+
+//--------------------------------------------------------------------------
+inline bool ivlset_t::contains(uint64 off) const
 {
   return (uchar)(size_t)HEXDSP(hx_ivlset_t_contains, this, off) != 0;
 }
@@ -10945,6 +10981,18 @@ inline bool ivlset_t::intersect(const ivlset_t &ivs)
 inline int ivlset_t::compare(const ivlset_t &r) const
 {
   return (int)(size_t)HEXDSP(hx_ivlset_t_compare, this, &r);
+}
+
+//--------------------------------------------------------------------------
+inline void ivlset_t::print(qstring *vout) const
+{
+  HEXDSP(hx_ivlset_t_print, this, vout);
+}
+
+//--------------------------------------------------------------------------
+inline const char *ivlset_t::dstr() const
+{
+  return (const char *)HEXDSP(hx_ivlset_t_dstr, this);
 }
 
 //--------------------------------------------------------------------------
@@ -11626,19 +11674,15 @@ inline const minsn_t *getb_reginsn(const minsn_t *ins)
 }
 
 //--------------------------------------------------------------------------
-inline intval64_t int64_emulator_t::mop_value(const mop_t &mop)
+inline bool int64_emulator_t::_mop_value(intval64_t *out, const mop_t &mop, vd_failure_t *vf)
 {
-  intval64_t retval;
-  HEXDSP(hx_int64_emulator_t_mop_value, &retval, this, &mop);
-  return retval;
+  return (uchar)(size_t)HEXDSP(hx_int64_emulator_t__mop_value, this, out, &mop, vf) != 0;
 }
 
 //--------------------------------------------------------------------------
-inline intval64_t int64_emulator_t::minsn_value(const minsn_t &insn)
+inline bool int64_emulator_t::_minsn_value(intval64_t *out, const minsn_t &insn, vd_failure_t *vf)
 {
-  intval64_t retval;
-  HEXDSP(hx_int64_emulator_t_minsn_value, &retval, this, &insn);
-  return retval;
+  return (uchar)(size_t)HEXDSP(hx_int64_emulator_t__minsn_value, this, out, &insn, vf) != 0;
 }
 
 //--------------------------------------------------------------------------
@@ -11663,6 +11707,12 @@ inline void mblock_t::dump() const
 inline AS_PRINTF(2, 0) void mblock_t::vdump_block(const char *title, va_list va) const
 {
   HEXDSP(hx_mblock_t_vdump_block, this, title, va);
+}
+
+//--------------------------------------------------------------------------
+inline void mblock_t::verify_insn(const minsn_t *m) const
+{
+  HEXDSP(hx_mblock_t_verify_insn, this, m);
 }
 
 //--------------------------------------------------------------------------
@@ -12028,9 +12078,9 @@ inline ea_t mba_t::map_fict_ea(ea_t fict_ea) const
 }
 
 //--------------------------------------------------------------------------
-inline void mba_t::serialize(bytevec_t &vout) const
+inline void mba_t::serialize(bytevec_t *vout) const
 {
-  HEXDSP(hx_mba_t_serialize, this, &vout);
+  HEXDSP(hx_mba_t_serialize, this, vout);
 }
 
 //--------------------------------------------------------------------------
@@ -12151,14 +12201,6 @@ inline vdui_t *get_widget_vdui(TWidget *f)
 inline bool decompile_many(const char *outfile, const eavec_t *funcaddrs, int flags)
 {
   return (uchar)(size_t)HEXDSP(hx_decompile_many, outfile, funcaddrs, flags) != 0;
-}
-
-//--------------------------------------------------------------------------
-inline qstring hexrays_failure_t::desc() const
-{
-  qstring retval;
-  HEXDSP(hx_hexrays_failure_t_desc, &retval, this);
-  return retval;
 }
 
 //--------------------------------------------------------------------------
@@ -12920,6 +12962,18 @@ inline bool cfunc_t::find_item_coords(const citem_t *item, int *px, int *py)
 }
 
 //--------------------------------------------------------------------------
+inline bool cfunc_t::serialize(bytevec_t *vout)
+{
+  return (uchar)(size_t)HEXDSP(hx_cfunc_t_serialize, this, vout) != 0;
+}
+
+//--------------------------------------------------------------------------
+inline WARN_UNUSED_RESULT cfunc_t *cfunc_t::deserialize(mba_t *mba, const uchar *bytes, size_t nbytes)
+{
+  return (cfunc_t *)HEXDSP(hx_cfunc_t_deserialize, mba, bytes, nbytes);
+}
+
+//--------------------------------------------------------------------------
 inline void cfunc_t::cleanup()
 {
   HEXDSP(hx_cfunc_t_cleanup, this);
@@ -13109,6 +13163,12 @@ inline bool vdui_t::ui_unmap_lvar(lvar_t *v)
 }
 
 //--------------------------------------------------------------------------
+inline bool vdui_t::ui_noprop_lvar(lvar_t *v)
+{
+  return (uchar)(size_t)HEXDSP(hx_vdui_t_ui_noprop_lvar, this, v) != 0;
+}
+
+//--------------------------------------------------------------------------
 inline bool vdui_t::map_lvar(lvar_t *from, lvar_t *to)
 {
   return (uchar)(size_t)HEXDSP(hx_vdui_t_map_lvar, this, from, to) != 0;
@@ -13236,5 +13296,4 @@ inline int select_udt_by_offset(const qvector<tinfo_t> *udts, const ui_stroff_op
 
 #ifdef __NT__
 #pragma warning(pop)
-#endif
 #endif

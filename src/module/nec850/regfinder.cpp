@@ -1,6 +1,6 @@
 /*
  *      Interactive disassembler (IDA).
- *      Copyright (c) 1990-2025 Hex-Rays
+ *      Copyright (c) 1990-2026 Hex-Rays
  *      ALL RIGHTS RESERVED.
  *
  */
@@ -51,15 +51,20 @@ reg_value_info_t nec850_reg_finder_t::handle_well_known_regs(
         rfop_t op,
         bool /*is_func_start*/) const
 {
+  if ( !op.is_reg() )
+    return rvi_t();
+  int reg = op.get_reg();
   ea_t ea = flow.actual_ea();
-  if ( op.is_reg(rZERO) )
+
+  if ( reg == rZERO )
     return rvi_t::make_num(0, ea);
+
   auto &_pm = (const nec850_t &)pm;
-  if ( op.is_reg(rGP) && _pm.g_gp_ea != BADADDR )
-    return rvi_t::make_num(_pm.g_gp_ea, ea, reg_value_def_t::LIKE_GOT);
-  if ( op.is_reg(rTP) && _pm.g_tp_ea != BADADDR )
-    return rvi_t::make_num(_pm.g_tp_ea, ea);
-  return rvi_t();
+  ea_t base = _pm.get_fixed_sreg(ea, reg);
+  if ( base == BADADDR )
+    return rvi_t();
+  uint16 val_flags = reg == rGP ? reg_value_def_t::LIKE_GOT : 0;
+  return rvi_t::make_num(base, ea, val_flags);
 }
 
 //-------------------------------------------------------------------------
@@ -147,7 +152,7 @@ bool nec850_reg_finder_t::emulate_insn(
   auto &_pm = (const nec850_t &)pm;
   // Note! there may be a recursive call of find()
   // spoils() calls is_call_insn()
-  // it may call find_lp_definition()
+  // it may call find_reg_definition()
   // it calls find_rvi()
   if ( !_pm.spoils(insn, reg) )
     return false;
@@ -161,6 +166,24 @@ bool nec850_reg_finder_t::emulate_insn(
       value->set_num(insn.Op1.value, insn);
       return true;
     case NEC850_MOVEA:
+      if ( only_linear_flow()
+        && insn.Op1.type == o_imm
+        && is_off0(get_flags32(insn.ea)) )
+      {
+        // try to use the offset target (only if called from is_call_insn())
+        refinfo_t ri;
+        if ( get_item_refinfo(&ri, insn.ea, 0) )
+        {
+          sval_t v = _pm.ea2sval(insn.Op1.value);
+          ea_t target;
+          if ( calc_reference_data(&target, nullptr, insn.ea, ri, v) )
+          {
+            value->set_num(target, insn);
+            return true;
+          }
+        }
+      }
+      [[fallthrough]];
     case NEC850_ADDI:
     case NEC850_ADD:
     case NEC850_SUB:
@@ -210,66 +233,58 @@ bool nec850_reg_finder_t::emulate_insn(
         return true;
       }
     case NEC850_JARL:
-      if ( insn.Op1.type == o_near && insn.Op2.is_reg(reg) )
       {
-        // jarl nextaddr, r2 == jump (w/o flow)
         ea_t nextaddr = insn.ea + insn.size;
-        if ( to_ea(insn.cs, insn.Op1.addr) == nextaddr )
+        // - jarl nextaddr, r2 == jump (w/o flow)
+        // - jarl __ghssave25, r10 => R29 points after the call
+        if ( (insn.Op1.type == o_near
+           && insn.Op2.is_reg(reg)
+           && to_ea(insn.cs, insn.Op1.addr) == nextaddr)
+          || reg == rR29 && _pm.is_special_save_r29_func(insn) )
         {
           value->set_num(nextaddr, insn, reg_value_def_t::PC_BASED);
           return true;
         }
       }
-      break;
+      [[fallthrough]];
+    case NEC850_JR:
+      goto SP_DELTA; // try special funcs
     case NEC850_PREPARE_sp:
     case NEC850_PREPARE_i:
+      if ( reg == rEP )
       {
-        if ( reg == rEP )
+        if ( insn.Op3.is_reg(rSP) )
         {
-          if ( insn.Op3.is_reg(rSP) )
-          {
-            sval_t sp_value;
-            if ( !_pm.find_sp_value(&sp_value, insn.ea + insn.size) )
-              break;
-            value->set_num(sp_value, insn);
-            return true;
-          }
-          else if ( insn.Op3.type == o_imm )
-          {
-            value->set_num(insn.Op3.value, insn);
-            return true;
-          }
-          else
-          {
+          sval_t sp_value;
+          if ( !_pm.find_sp_value(&sp_value, insn.ea + insn.size) )
             break;
-          }
+          value->set_num(sp_value, insn);
+          return true;
+        }
+        else if ( insn.Op3.type == o_imm )
+        {
+          value->set_num(insn.Op3.value, insn);
+          return true;
+        }
+        else
+        {
+          break;
         }
       }
-    //fall through
+      [[fallthrough]];
     case NEC850_DISPOSE_r0:
     case NEC850_DISPOSE_r:
+SP_DELTA:
+      if ( reg == rSP )
       {
-        if ( reg == rSP )
+        int delta = _pm.calc_stack_delta(insn);
+        if ( delta != 0 )
         {
-          uval_t list12;
-          uval_t imm5;
-          rvi_t::arith_op_t aop;
-          if ( insn.itype == NEC850_PREPARE_sp || insn.itype == NEC850_PREPARE_i )
-          {
-            aop = rvi_t::SUB;
-            list12 = insn.Op1.value;
-            imm5 = insn.Op2.value;
-          }
-          else
-          {
-            aop = rvi_t::ADD;
-            list12 = insn.Op2.value;
-            imm5 = insn.Op1.value;
-          }
-          op_t sp, delta;
-          pm.make_op_reg(&sp, rSP);
-          pm.make_op_imm(&delta, calc_stack_delta(list12, imm5));
-          emulate_binary_op(value, aop, sp, delta, insn, flow);
+          op_t spop;
+          pm.make_op_reg(&spop, rSP);
+          op_t deltaop;
+          pm.make_op_imm(&deltaop, delta);
+          emulate_binary_op(value, rvi_t::ADD, spop, deltaop, insn, flow);
           return true;
         }
       }
