@@ -50,27 +50,7 @@ To build:
 - **C++ compiler** that fully supports C++17 compatible with your platform:
     - GCC or LLVM/Clang (Linux/macOS)
     - Microsoft Visual C++ (MSVC) 2022 or later (Windows)
-- **GNU Bash** and **core utilities**
-  - *Included by default* on **Linux** and **macOS**
-  - On **Windows**, install via **[Cygwin](https://cygwin.com/)** — required to provide a Unix-like environment **and** tools like `cygpath`, which are needed for proper path translation
-
-> **NOTE:**
-> Required Cygwin packages:
-> `bash`, `coreutils`, `make`, `binutils`, `diffutils`, `gcc-g++`, `rsync`
->
-> Install using [Cygwin Installer](https://cygwin.com/setup-x86_64.exe):
-> ```cmd
-> .\setup-x86_64.exe -q -P make,strip,diffutils,binutils,gcc-g++,rsync --site "http://mirrors.kernel.org/sourceware/cygwin/"
-> ```
-> The mirror in `--site` is specified for quiet mode.
-> You can choose another mirror or run the setup GUI once - after that, this will no longer be necessary.
->
-> **Optional Cygwin packages** (needed for IDAPython):
-> `zip`, `unzip`, `swig`
->
-> ```cmd
-> .\setup-x86_64.exe -q -P zip,unzip,swig
-> ```
+- **cmake**
 
 To use the SDK:
 
@@ -89,7 +69,7 @@ To use the SDK:
 
 ## Getting Started
 
-**CMake is the supported build system for the IDA SDK.** The legacy `make` / `.bat` build is deprecated and will be removed in a future release — please migrate to CMake.
+**CMake is the supported build system for the IDA SDK.**
 
 To install the project on your local machine, refer to the instructions in [src/readme.txt](src/readme.txt).
 Additional README files in subdirectories provide more details about:
@@ -98,29 +78,15 @@ Additional README files in subdirectories provide more details about:
 - Loaders
 - Other components
 
-### Building with CMake
-
-> **Heads-up:** The CMake build is under active development. Commands, targets, and options may change between releases. If you rely on this build, **watch the [`releases/9.4`](https://github.com/HexRaysSA/ida-sdk/tree/releases/9.4) branch** for upcoming CMake changes and update your scripts accordingly. The branch may not exist yet — it will be published before merging back to `main`. If you are still on the legacy `make` build, switch to CMake now — it will not receive further updates.
-
-**Initialize submodule (first time only):**
-```shell
-git submodule update --init --recursive
-```
+### Building
 
 **Basic build (all components except Qt plugins):**
 
-Linux/macOS:
+Linux/macOS/Windows:
 ```shell
 cd src/
-cmake -B build -G Ninja
+cmake -B build -G Ninja # Or other generator
 cmake --build build
-```
-
-Windows:
-```cmd
-cd src\
-cmake -B build
-cmake --build build --config Release
 ```
 
 **Build with Qt6 support (optional)** (for qproject/qwindow plugins):
@@ -155,37 +121,18 @@ cmake --build build                     # Build with Qt support
 
 For detailed CMake build options and troubleshooting, see [CLAUDE.md](CLAUDE.md).
 
-### Legacy `make` build (deprecated)
-
-> **Deprecated.** The `make` / `.bat` build is frozen and will be removed in a future release. New features, fixes, and examples are landing in the CMake build only. Please migrate.
-
-Linux/macOS:
-```shell
-cd src/
-make
-```
-
-Windows:
-```cmd
-cd src/
-bin/mo.bat
-```
-
-#### Debugger Servers (legacy build)
+#### Debugger Servers
 
 This SDK does not provide debugger servers for macOS.
 
-Building Debugger Servers on Linux:
+Building Debugger Servers on Linux/Windows:
 ```shell
 cd src/
-BUILD_DBGSRV=1 make
-```
+cmake --preset dbgserver
+cmake --build --preset dbgserver
 
-Building Debugger Servers on Windows:
-```cmd
-cd src\
-bin\mso.bat   :: will build win64_remote.exe
-bin\m32x86so.bat :: will build win32_remote32.exe
+cmake --preset dbgserver-ea32
+cmake --build --preset dbgserver-ea32
 ```
 
 ### Run
