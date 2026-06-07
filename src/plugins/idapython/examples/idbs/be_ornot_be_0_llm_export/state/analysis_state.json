@@ -1,0 +1,20 @@
+{
+  "schema_version": "ida-llm-cpp-bundle-v1",
+  "bundle": "be_ornot_be_0_llm_export",
+  "status": "working_copy",
+  "function_renames": [],
+  "local_variable_renames": [],
+  "global_renames": [],
+  "struct_member_renames": [],
+  "comments": [],
+  "rename_record_template": {
+    "target": "function|local_variable|global|struct_member|comment",
+    "ea": "0x...",
+    "function_ea": "0x... for locals",
+    "old_name": "sub_...",
+    "proposed_name": "descriptive_behavior_name",
+    "confidence": "high|medium|low",
+    "status": "proposed|accepted|applied|rejected",
+    "evidence": ["imports", "strings", "xrefs", "pseudocode", "disassembly"]
+  }
+}

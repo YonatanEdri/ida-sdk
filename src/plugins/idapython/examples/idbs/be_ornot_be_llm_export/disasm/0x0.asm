@@ -1,0 +1,7 @@
+0x0: push    ebp
+0x1: mov     ebp, esp
+0x3: mov     eax, [ebp+be]
+0x6: not     eax
+0x8: or      eax, [ebp+be]
+0xB: pop     ebp
+0xC: retn

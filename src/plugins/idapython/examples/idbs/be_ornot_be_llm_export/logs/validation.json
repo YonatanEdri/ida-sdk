@@ -1,0 +1,5 @@
+{
+  "ok": true,
+  "warnings": [],
+  "counts": {"segments":1,"imports":0,"exports":0,"names":1,"strings":0,"functions":1,"data_items":0,"callgraph_edges":0,"xrefs_code":0,"xrefs_data":0,"pseudocode":1,"decompiler_failures":0}
+}

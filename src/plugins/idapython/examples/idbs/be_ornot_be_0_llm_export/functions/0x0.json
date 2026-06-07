@@ -1,0 +1,25 @@
+{
+  "schema_version": "ida-llm-cpp-bundle-v1",
+  "ea": "0x0",
+  "end_ea": "0xD",
+  "name": "func",
+  "signature": "",
+  "attrs": [],
+  "tags": ["entry_or_unreferenced"],
+  "score": 10,
+  "size": 13,
+  "instruction_count": 7,
+  "paths": {
+    "disasm": "disasm/0x0.asm",
+    "pseudocode": "pseudocode/0x0.c"
+  },
+  "callers": [],
+  "callees": [],
+  "external_callees": [],
+  "string_refs": [],
+  "data_refs": [],
+  "rename_targets": {
+    "function": {"ea": "0x0", "current_name": "func"},
+    "locals": []
+  }
+}

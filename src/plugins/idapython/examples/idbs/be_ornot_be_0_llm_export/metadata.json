@@ -1,0 +1,14 @@
+{
+  "schema_version": "ida-llm-cpp-bundle-v1",
+  "exporter": "idb_ai_exporter",
+  "generated_at": "2026-05-18T10:04:02",
+  "input_file": "Z:\\idasrc\\current\\plugins\\vd\\z.obj",
+  "md5": "89857ca6cc33905e5c7c8aef6cfd5605",
+  "processor": "metapc",
+  "bitness": 32,
+  "loader": "COFF (X386MAGIC)",
+  "image_base": "0x0",
+  "min_ea": "0x0",
+  "max_ea": "0xD",
+  "entry_point": null
+}
